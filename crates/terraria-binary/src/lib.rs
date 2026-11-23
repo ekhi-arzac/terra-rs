@@ -1,0 +1,54 @@
+//! Checked primitives shared by the managed file and network formats.
+use thiserror::Error;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum Error {
+    #[error("incomplete field")]
+    Truncated,
+    #[error("invalid 7-bit string length")]
+    StringLength,
+    #[error("invalid UTF-8")]
+    Utf8,
+}
+
+pub struct Reader<'a>(pub &'a [u8]);
+
+impl<'a> Reader<'a> {
+    pub fn bytes(&mut self, count: usize) -> Result<&'a [u8], Error> {
+        let (value, rest) = self.0.split_at_checked(count).ok_or(Error::Truncated)?;
+        self.0 = rest;
+        Ok(value)
+    }
+    pub fn i32(&mut self) -> Result<i32, Error> {
+        Ok(i32::from_le_bytes(self.take()?))
+    }
+    pub fn take<const N: usize>(&mut self) -> Result<[u8; N], Error> {
+        let (value, rest) = self.0.split_first_chunk().ok_or(Error::Truncated)?;
+        self.0 = rest;
+        Ok(*value)
+    }
+    pub fn byte(&mut self) -> Result<u8, Error> {
+        Ok(self.take::<1>()?[0])
+    }
+    pub fn u16(&mut self) -> Result<u16, Error> {
+        Ok(u16::from_le_bytes(self.take()?))
+    }
+    pub fn i16(&mut self) -> Result<i16, Error> {
+        Ok(i16::from_le_bytes(self.take()?))
+    }
+    pub fn string(&mut self) -> Result<&'a str, Error> {
+        let mut len = 0u32;
+        for shift in (0..35).step_by(7) {
+            let part = self.byte()?;
+            if shift == 28 && part > 7 {
+                return Err(Error::StringLength);
+            }
+            len |= u32::from(part & 0x7f) << shift;
+            if part < 128 {
+                let value = self.bytes(len as usize)?;
+                return std::str::from_utf8(value).map_err(|_| Error::Utf8);
+            }
+        }
+        Err(Error::StringLength)
+    }
+}

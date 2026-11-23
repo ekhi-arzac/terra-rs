@@ -10,7 +10,7 @@ use tokio::{
 
 #[test]
 fn gates_upload_on_version_and_password() {
-    let mut s = Session::new(2);
+    let mut s = Session::new(2, false);
     assert_eq!(
         s.handle(Packet::Hello("different".into()), ""),
         Some(Packet::Kick(NetworkText::key("LegacyMultiplayer.4")))
@@ -18,13 +18,13 @@ fn gates_upload_on_version_and_password() {
     assert_eq!(s.phase(), &Phase::Closed);
     assert_eq!(s.handle(Packet::Hello(GREETING.into()), ""), None);
     for p in [Packet::RequestWorld, Packet::Password("right".into())] {
-        let mut s = Session::new(2);
+        let mut s = Session::new(2, false);
         assert_eq!(
             s.handle(p, "right"),
             Some(Packet::Kick(NetworkText::key("LegacyMultiplayer.2")))
         );
     }
-    let mut s = Session::new(2);
+    let mut s = Session::new(2, false);
     assert_eq!(
         s.handle(Packet::Hello(GREETING.into()), "right"),
         Some(Packet::RequestPassword)
@@ -38,7 +38,7 @@ fn gates_upload_on_version_and_password() {
 
 #[test]
 fn upload_uses_socket_identity_and_bounds_sparse_slots() {
-    let mut s = Session::new(3);
+    let mut s = Session::new(3, false);
     s.handle(Packet::Hello(GREETING.into()), "abc");
     assert_eq!(
         s.handle(Packet::Password("abc".into()), "abc"),
@@ -125,6 +125,7 @@ async fn loopback_admission_capacity_reconnect_and_shutdown() {
             listener,
             NonZeroU8::new(2).unwrap(),
             String::new(),
+            false,
             async {
                 let _ = stopped.await;
             },
@@ -175,4 +176,74 @@ async fn loopback_admission_capacity_reconnect_and_shutdown() {
     })
     .await
     .unwrap();
+}
+
+#[test]
+fn appearance_normalization_and_world_mode_admission() {
+    use terraria_protocol::Appearance;
+    let base = Appearance {
+        player: 200,
+        skin: 255,
+        voice: 0,
+        pitch: f32::NAN,
+        hair: 228,
+        name: "  Terra  ".into(),
+        hair_dye: 0,
+        hidden_accessories: 0,
+        hidden_misc: 0,
+        colors: [[0; 3]; 7],
+        difficulty_flags: 0,
+        torch_cart_flags: 0,
+        permanent_upgrades: 0,
+    };
+    for (journey_world, journey_character, reason) in [
+        (false, false, None),
+        (true, true, None),
+        (
+            true,
+            false,
+            Some("Net.PlayerIsNotCreativeAndWorldIsCreative"),
+        ),
+        (
+            false,
+            true,
+            Some("Net.PlayerIsCreativeAndWorldIsNotCreative"),
+        ),
+    ] {
+        let mut s = Session::new(7, journey_world);
+        s.handle(Packet::Hello(GREETING.into()), "");
+        let mut a = base.clone();
+        if journey_character {
+            a.difficulty_flags |= 8;
+        }
+        assert_eq!(
+            s.handle(Packet::Appearance(a), ""),
+            reason.map(|key| Packet::Kick(NetworkText::key(key)))
+        );
+        if reason.is_none() {
+            let a = s.character().appearance.as_ref().unwrap();
+            assert_eq!(
+                (a.player, a.skin, a.voice, a.hair, a.name.as_str()),
+                (7, 11, 1, 0, "Terra")
+            );
+            assert_eq!(a.pitch, 0.0);
+        }
+    }
+    for (name, key) in [
+        ("  ".into(), "Net.EmptyName"),
+        ("🍄".repeat(11), "Net.NameTooLong"),
+    ] {
+        let mut s = Session::new(4, false);
+        s.handle(Packet::Hello(GREETING.into()), "");
+        assert_eq!(
+            s.handle(
+                Packet::Appearance(Appearance {
+                    name,
+                    ..base.clone()
+                }),
+                ""
+            ),
+            Some(Packet::Kick(NetworkText::key(key)))
+        );
+    }
 }

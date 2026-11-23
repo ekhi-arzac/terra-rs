@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::{env, error::Error, fs, net::SocketAddr, num::NonZeroU8};
+use std::{env, error::Error, fs, net::SocketAddr, num::NonZeroU8, path::PathBuf};
 use tokio::net::TcpListener;
 use tracing::info;
 
@@ -9,6 +9,7 @@ struct Config {
     bind: SocketAddr,
     max_players: NonZeroU8,
     password: String,
+    world: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -17,6 +18,7 @@ impl Default for Config {
             bind: ([127, 0, 0, 1], 7777).into(),
             max_players: NonZeroU8::new(8).unwrap(),
             password: String::new(),
+            world: None,
         }
     }
 }
@@ -36,13 +38,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
         _ => return Err("usage: terraria-server [--config FILE.toml]".into()),
     };
+    let world = config
+        .world
+        .as_ref()
+        .map(terraria_world::World::load)
+        .transpose()?;
+    if let Some(w) = &world {
+        let m = w.metadata();
+        info!(world = %m.name, width = m.width, height = m.height, "loaded world");
+    }
+    let journey_mode = world.as_ref().is_some_and(|w| w.metadata().game_mode == 3);
     let listener = TcpListener::bind(config.bind).await?;
     info!(address = %listener.local_addr()?, slots = %config.max_players, "listening for Terraria character uploads");
-    terraria_network::serve(listener, config.max_players, config.password, async {
-        if let Err(error) = tokio::signal::ctrl_c().await {
-            tracing::error!(%error, "shutdown signal handler failed");
-        }
-    })
+    terraria_network::serve(
+        listener,
+        config.max_players,
+        config.password,
+        journey_mode,
+        async {
+            if let Err(error) = tokio::signal::ctrl_c().await {
+                tracing::error!(%error, "shutdown signal handler failed");
+            }
+        },
+    )
     .await?;
     Ok(())
 }

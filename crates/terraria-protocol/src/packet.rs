@@ -96,7 +96,7 @@ impl Packet {
         }
         let mut r = Reader(&frame.payload);
         let p = match frame.id {
-            1 => Self::Hello(r.string()?),
+            1 => Self::Hello(r.string()?.to_owned()),
             2 => Self::Kick(NetworkText::read(&mut r, 0)?),
             3 => Self::AssignSlot {
                 player: r.byte()?,
@@ -108,7 +108,7 @@ impl Packet {
                 let voice = r.byte()?;
                 let pitch = f32::from_le_bytes(r.take()?);
                 let hair = r.byte()?;
-                let name = r.string()?;
+                let name = r.string()?.to_owned();
                 let hair_dye = r.byte()?;
                 let hidden_accessories = r.u16()?;
                 let hidden_misc = r.byte()?;
@@ -154,7 +154,7 @@ impl Packet {
                 }
             }
             37 => Self::RequestPassword,
-            38 => Self::Password(r.string()?),
+            38 => Self::Password(r.string()?.to_owned()),
             50 => {
                 let player = r.byte()?;
                 let mut types = Vec::new();
@@ -170,13 +170,13 @@ impl Packet {
                 }
                 Self::Buffs { player, types }
             }
-            68 => Self::ClientUuid(r.string()?),
+            68 => Self::ClientUuid(r.string()?.to_owned()),
             147 => Self::Loadout {
                 player: r.byte()?,
                 index: r.byte()?,
                 hidden_accessories: r.u16()?,
             },
-            161 => Self::HostToken(r.string()?),
+            161 => Self::HostToken(r.string()?.to_owned()),
             id => return Err(Error::Unknown(id)),
         };
         if !r.0.is_empty() {

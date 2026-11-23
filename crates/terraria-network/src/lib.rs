@@ -46,9 +46,14 @@ pub async fn write_packet<W: AsyncWrite + Unpin>(w: &mut W, packet: &Packet) -> 
     Ok(())
 }
 
-async fn connection(mut stream: TcpStream, slot: u8, password: &str) -> Result<(), Error> {
+async fn connection(
+    mut stream: TcpStream,
+    slot: u8,
+    password: &str,
+    journey_mode: bool,
+) -> Result<(), Error> {
     stream.set_nodelay(true)?;
-    let mut session = Session::new(slot);
+    let mut session = Session::new(slot, journey_mode);
     while let Some(frame) = read_frame(&mut stream).await? {
         let packet = match Packet::decode(&frame) {
             Ok(p) => p,
@@ -78,6 +83,7 @@ pub async fn serve(
     listener: TcpListener,
     max_players: NonZeroU8,
     password: String,
+    journey_mode: bool,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), Error> {
     let mut free: BTreeSet<u8> = (0..max_players.get()).collect();
@@ -101,7 +107,7 @@ pub async fn serve(
                 let password = Arc::clone(&password);
                 tasks.spawn(async move {
                     debug!(%peer, slot, "accepted client");
-                    match timeout(Duration::from_secs(90), connection(socket, slot, &password)).await {
+                    match timeout(Duration::from_secs(90), connection(socket, slot, &password, journey_mode)).await {
                         Ok(Err(e)) => debug!(%peer, slot, error = %e, "connection closed"),
                         Err(_) => warn!(%peer, slot, "join deadline elapsed"),
                         Ok(Ok(())) => {}

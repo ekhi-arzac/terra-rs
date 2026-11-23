@@ -1,4 +1,5 @@
 use bytes::{BufMut, Bytes, BytesMut};
+pub(crate) use terraria_binary::Reader;
 use thiserror::Error;
 
 pub const MAX_FRAME: usize = u16::MAX as usize;
@@ -7,12 +8,8 @@ pub const MAX_FRAME: usize = u16::MAX as usize;
 pub enum Error {
     #[error("frame length {0} is outside 3..=65535")]
     Length(usize),
-    #[error("incomplete field")]
-    Truncated,
-    #[error("invalid 7-bit string length")]
-    StringLength,
-    #[error("invalid UTF-8")]
-    Utf8,
+    #[error(transparent)]
+    Field(#[from] terraria_binary::Error),
     #[error("packet has {0} trailing bytes")]
     Trailing(usize),
     #[error("unsupported message ID {0}")]
@@ -51,46 +48,6 @@ impl Frame {
             id: data[2],
             payload: data.slice(3..),
         }))
-    }
-}
-
-pub(crate) struct Reader<'a>(pub &'a [u8]);
-
-impl<'a> Reader<'a> {
-    pub fn take<const N: usize>(&mut self) -> Result<[u8; N], Error> {
-        let (value, rest) = self.0.split_first_chunk().ok_or(Error::Truncated)?;
-        self.0 = rest;
-        Ok(*value)
-    }
-    pub fn byte(&mut self) -> Result<u8, Error> {
-        Ok(self.take::<1>()?[0])
-    }
-    pub fn u16(&mut self) -> Result<u16, Error> {
-        Ok(u16::from_le_bytes(self.take()?))
-    }
-    pub fn i16(&mut self) -> Result<i16, Error> {
-        Ok(i16::from_le_bytes(self.take()?))
-    }
-    pub fn string(&mut self) -> Result<String, Error> {
-        let mut len = 0u32;
-        for shift in (0..35).step_by(7) {
-            let part = self.byte()?;
-            if shift == 28 && part > 7 {
-                return Err(Error::StringLength);
-            }
-            len |= u32::from(part & 0x7f) << shift;
-            if part < 128 {
-                let (value, rest) = self
-                    .0
-                    .split_at_checked(len as usize)
-                    .ok_or(Error::Truncated)?;
-                self.0 = rest;
-                return Ok(std::str::from_utf8(value)
-                    .map_err(|_| Error::Utf8)?
-                    .to_owned());
-            }
-        }
-        Err(Error::StringLength)
     }
 }
 

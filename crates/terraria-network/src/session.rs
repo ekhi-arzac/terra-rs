@@ -25,14 +25,16 @@ pub struct Character {
 pub struct Session {
     pub(crate) phase: Phase,
     slot: u8,
+    journey_mode: bool,
     character: Character,
 }
 
 impl Session {
-    pub fn new(slot: u8) -> Self {
+    pub fn new(slot: u8, journey_mode: bool) -> Self {
         Self {
             phase: Phase::AwaitHello,
             slot,
+            journey_mode,
             character: Character::default(),
         }
     }
@@ -85,6 +87,15 @@ impl Session {
                 }
                 if a.name.encode_utf16().count() > 20 {
                     return self.close(NetworkText::key("Net.NameTooLong"));
+                }
+                let journey_character = a.difficulty_flags & 8 != 0;
+                if journey_character != self.journey_mode {
+                    let key = if journey_character {
+                        "Net.PlayerIsCreativeAndWorldIsNotCreative"
+                    } else {
+                        "Net.PlayerIsNotCreativeAndWorldIsCreative"
+                    };
+                    return self.close(NetworkText::key(key));
                 }
                 a.skin = a.skin.min(11);
                 a.voice = a.voice.clamp(1, 4);

@@ -432,6 +432,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "terraria-binary"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "terraria-network"
 version = "0.1.0"
 dependencies = [
@@ -448,6 +455,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "proptest",
+ "terraria-binary",
  "thiserror",
 ]
 
@@ -457,6 +465,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "terraria-network",
+ "terraria-world",
  "tokio",
  "toml",
  "tracing",
@@ -470,6 +479,15 @@ dependencies = [
  "terraria-network",
  "terraria-protocol",
  "tokio",
+]
+
+[[package]]
+name = "terraria-world"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "terraria-binary",
+ "thiserror",
 ]
 
 [[package]]

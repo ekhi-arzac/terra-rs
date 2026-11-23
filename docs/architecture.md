@@ -23,6 +23,8 @@ A type name alone lists its fields and methods. In the dispatch methods the firs
 
 | Component | Responsibility |
 | --- | --- |
+| terraria-binary | Bounds-checked .NET primitives shared by file and wire readers. |
+| terraria-world | Validated immutable world image, column index, container inspection and lossless save. |
 | terraria-protocol | Version-specific typed packets, fallible field codecs and immutable Bytes frames. It has no sockets or global game state. |
 | terraria-network | Tokio listener, bounded admission, socket I/O, connection phases and per-connection character staging. |
 | terraria-server | TOML configuration, structured logging, startup and shutdown. |
@@ -38,7 +40,7 @@ The listener alone owns the free slots. Each admitted socket gets one task and o
 | Messages | `ID.MessageID` names the IDs. `MessageBuffer.GetData` (RVA 0x14d2e4) handles mode and phase checks, field decoding and effects. `NetMessage.SendData` (0x167c7c) writes the matching fields and dispatches to the intended recipients. |
 | Player and inventory | Clients upload join-time appearance, vitals, loadout, buffs and equipment. The receiving server selects the player by connection. `PlayerItemSlotID..cctor` allocates the 990 serialized slot indices. `Item.SetDefaults` and the slot reference type link inventory entries to game definitions. Staged Rust data has no in-world effect yet. |
 | World files and generation | `IO.WorldFile.LoadWorld` selects a versioned reader. `LoadWorld_Version2` uses a directory, frame-importance table and section loaders. `SaveWorld_Version2` writes the sections and backpatches their end offsets. `WorldGen` owns generation and terrain updates. `Tile` holds active type, wall, liquid, frames and packed flags. |
-| World transmission | Request 6 transitions vanilla state 1 to 2 and triggers WorldData (7). `NetMessage.SendSection` and `RemoteClient.TileSections` track delivery. `CompressTileBlock` writes x/y as i32 and width/height as i16 inside a DeflateStream, then delegates tile and entity encoding to `CompressTileBlock_Inner`. |
+| World transmission | Request 6 transitions vanilla state 1 to 2 and triggers WorldData (7). `NetMessage.SendSection` and `RemoteClient.TileSections` track delivery. `Netplay.GetSectionX/Y` divides tile coordinates by 200 and 150 respectively. `CompressTileBlock` writes x/y as i32 and width/height as i16 inside a DeflateStream, then delegates tile and entity encoding to `CompressTileBlock_Inner`. |
 | Tick and entities | `Main.DedServ` drives a 1000/60 ms accumulator. With no fully joined player it services networking. With joined players it calls the game update. In `DoUpdateInWorld_Inner` the observed relative order is players, NPC spawning, pressure plates, NPCs, projectiles, items, time, world generation/invasion and server/client updates. Other passes occur between these calls. `Player`, `NPC`, `Projectile` and `Item` state is reached through the world update routines. |
 | Shutdown | `Main.DedServ` handles console input and server-loop termination. `WorldFile.InternalSaveWorld` and `DoRollingBackups` are the reference save/backup entry points. |
 

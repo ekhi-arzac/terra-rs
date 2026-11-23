@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+terraria-world.workspace = true
 terraria-network.workspace = true
 tokio.workspace = true
 serde.workspace = true

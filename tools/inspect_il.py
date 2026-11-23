@@ -40,11 +40,16 @@ def main():
                 parent = row.Class.row
                 owner = str(getattr(parent, "TypeName", ""))
             sig = getattr(row, "Signature", None)
-            return f"{owner}::{name}" + (f" [{sig.value.hex()}]" if sig else "") if owner else name
+            if not owner:
+                return name
+            signature = f" [{sig.value.hex()}]" if sig else ""
+            return f"{owner}::{name}{signature}"
         return "" if value is None else str(value)
 
     for selector in args.selectors:
         name, _, method = selector.partition("::")
+        if name not in types:
+            raise SystemExit(f"Unknown type {name}")
         ty = types[name]
         print(f"\n{name}")
         if not method:

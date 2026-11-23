@@ -19,7 +19,7 @@ impl NetworkText {
             return Err(Error::Invalid("NetworkText nesting depth"));
         }
         let mode = r.byte()?;
-        let value = r.string()?;
+        let value = r.string()?.to_owned();
         if mode == 0 {
             return Ok(Self::Literal(value));
         }
