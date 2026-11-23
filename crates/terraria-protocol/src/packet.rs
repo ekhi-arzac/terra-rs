@@ -52,6 +52,8 @@ pub enum Packet {
     Appearance(Appearance),
     Equipment(Equipment),
     RequestWorld,
+    WorldData(Box<crate::WorldData>),
+    RequestSections { spawn: [i32;2], team: u8 },
     Life(Vitals),
     RequestPassword,
     Password(String),
@@ -78,6 +80,8 @@ impl Packet {
             Self::Appearance(_) => 4,
             Self::Equipment(_) => 5,
             Self::RequestWorld => 6,
+            Self::WorldData(_) => 7,
+            Self::RequestSections { .. } => 8,
             Self::Life(_) => 16,
             Self::RequestPassword => 37,
             Self::Password(_) => 38,
@@ -141,6 +145,8 @@ impl Packet {
                 flags: r.byte()?,
             }),
             6 => Self::RequestWorld,
+            7 => Self::WorldData(Box::new(crate::WorldData::read(&mut r)?)),
+            8 => Self::RequestSections {spawn:r.i32s()?,team:r.byte()?},
             id @ (16 | 42) => {
                 let v = Vitals {
                     player: r.byte()?,
@@ -223,6 +229,8 @@ impl Packet {
                 out.put_i16_le(e.item);
                 out.put_u8(e.flags);
             }
+            Self::WorldData(data) => data.write(&mut out)?,
+            Self::RequestSections {spawn,team} => { for v in spawn { out.put_i32_le(*v); } out.put_u8(*team); }
             Self::RequestWorld | Self::RequestPassword => {}
             Self::Life(v) | Self::Mana(v) => {
                 out.put_u8(v.player);

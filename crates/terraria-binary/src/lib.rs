@@ -36,6 +36,18 @@ impl<'a> Reader<'a> {
     pub fn i16(&mut self) -> Result<i16, Error> {
         Ok(i16::from_le_bytes(self.take()?))
     }
+    pub fn i32s<const N: usize>(&mut self) -> Result<[i32;N], Error> {
+        let mut values = [0;N];
+        for value in &mut values { *value = self.i32()?; }
+        Ok(values)
+    }
+    pub fn i16s<const N: usize>(&mut self) -> Result<[i16;N], Error> {
+        let mut values = [0;N];
+        for value in &mut values { *value = self.i16()?; }
+        Ok(values)
+    }
+    pub fn f32(&mut self) -> Result<f32, Error> { Ok(f32::from_le_bytes(self.take()?)) }
+    pub fn f64(&mut self) -> Result<f64, Error> { Ok(f64::from_le_bytes(self.take()?)) }
     pub fn string(&mut self) -> Result<&'a str, Error> {
         let mut len = 0u32;
         for shift in (0..35).step_by(7) {
