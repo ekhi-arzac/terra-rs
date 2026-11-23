@@ -1,0 +1,10 @@
+[package]
+name = "terraria-testkit"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+terraria-protocol.workspace = true
+terraria-network.workspace = true
+tokio.workspace = true

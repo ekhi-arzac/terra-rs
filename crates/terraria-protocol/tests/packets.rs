@@ -1,0 +1,252 @@
+use bytes::{Bytes, BytesMut};
+use proptest::prelude::*;
+use terraria_protocol::{
+    Appearance, Equipment, Error, Frame, GREETING, MAX_BUFFS, MAX_FRAME, NetworkText, Packet,
+    Vitals,
+};
+
+fn frame(id: u8, payload: &[u8]) -> Frame {
+    Frame {
+        id,
+        payload: Bytes::copy_from_slice(payload),
+    }
+}
+
+fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
+    let a = Appearance {
+        player: 3,
+        skin: 2,
+        voice: 4,
+        pitch: -0.5,
+        hair: 9,
+        name: "é".into(),
+        hair_dye: 7,
+        hidden_accessories: 258,
+        hidden_misc: 6,
+        colors: [[1, 2, 3]; 7],
+        difficulty_flags: 4,
+        torch_cart_flags: 16,
+        permanent_upgrades: 80,
+    };
+    let mut appearance = vec![3, 2, 4, 0, 0, 0, 0xbf, 9, 2, 0xc3, 0xa9, 7, 2, 1, 6];
+    appearance.extend([1, 2, 3].repeat(7));
+    appearance.extend([4, 16, 80]);
+    let vitals = Vitals {
+        player: 3,
+        current: -10,
+        maximum: 300,
+    };
+    vec![
+        (
+            Packet::Hello(GREETING.into()),
+            1,
+            b"\x0bTerraria326".to_vec(),
+        ),
+        (
+            Packet::Kick(NetworkText::key("LegacyMultiplayer.4")),
+            2,
+            b"\x02\x13LegacyMultiplayer.4\0".to_vec(),
+        ),
+        (
+            Packet::AssignSlot {
+                player: 0,
+                special: false,
+            },
+            3,
+            vec![0, 0],
+        ),
+        (Packet::Appearance(a), 4, appearance),
+        (
+            Packet::Equipment(Equipment {
+                player: 3,
+                slot: 989,
+                stack: 99,
+                prefix: 4,
+                item: 4000,
+                flags: 3,
+            }),
+            5,
+            vec![3, 0xdd, 3, 99, 0, 4, 0xa0, 15, 3],
+        ),
+        (Packet::RequestWorld, 6, vec![]),
+        (Packet::Life(vitals), 16, vec![3, 246, 255, 44, 1]),
+        (Packet::RequestPassword, 37, vec![]),
+        (Packet::Password("abc".into()), 38, b"\x03abc".to_vec()),
+        (Packet::Mana(vitals), 42, vec![3, 246, 255, 44, 1]),
+        (
+            Packet::Buffs {
+                player: 3,
+                types: vec![258, 4],
+            },
+            50,
+            vec![3, 2, 1, 4, 0, 0, 0],
+        ),
+        (Packet::ClientUuid("xyz".into()), 68, b"\x03xyz".to_vec()),
+        (
+            Packet::Loadout {
+                player: 3,
+                index: 2,
+                hidden_accessories: 256,
+            },
+            147,
+            vec![3, 2, 0, 1],
+        ),
+        (Packet::HostToken("abc".into()), 161, b"\x03abc".to_vec()),
+    ]
+}
+
+#[test]
+fn layouts_round_trip_and_reject_truncation_and_trailing_bytes() {
+    for (packet, id, payload) in examples() {
+        let mut bytes = BytesMut::from(packet.encode().unwrap().as_ref());
+        assert_eq!(bytes[..2], ((payload.len() + 3) as u16).to_le_bytes());
+        let raw = Frame::split(&mut bytes).unwrap().unwrap();
+        assert_eq!(raw, frame(id, &payload));
+        assert!(bytes.is_empty());
+        assert_eq!(Packet::decode(&raw).unwrap(), packet);
+        for cut in 0..payload.len() {
+            assert!(
+                Packet::decode(&frame(id, &payload[..cut])).is_err(),
+                "id={id} cut={cut}"
+            );
+        }
+        let mut extra = payload;
+        extra.push(0);
+        assert_eq!(Packet::decode(&frame(id, &extra)), Err(Error::Trailing(1)));
+    }
+}
+
+#[test]
+fn fragmented_and_coalesced_frames_are_consumed_exactly_once() {
+    let first = Packet::Hello(GREETING.into()).encode().unwrap();
+    let second = Packet::RequestPassword.encode().unwrap();
+    for cut in 0..first.len() {
+        let mut buf = BytesMut::from(&first[..cut]);
+        assert_eq!(Frame::split(&mut buf).unwrap(), None);
+        assert_eq!(buf.as_ref(), &first[..cut]);
+        buf.extend_from_slice(&first[cut..]);
+        buf.extend_from_slice(&second);
+        assert_eq!(Frame::split(&mut buf).unwrap().unwrap().id, 1);
+        assert_eq!(Frame::split(&mut buf).unwrap().unwrap().id, 37);
+        assert!(buf.is_empty());
+    }
+    for len in 0..3 {
+        assert_eq!(
+            Frame::split(&mut BytesMut::from(&[len, 0][..])),
+            Err(Error::Length(len.into()))
+        );
+    }
+}
+
+#[test]
+fn codec_limits_and_noncanonical_inputs() {
+    for input in [
+        &[128; 5][..],
+        &[255, 255, 255, 255, 8],
+        &[1, 0xff],
+        &[0xff, 0x7f],
+        &[0x80],
+    ] {
+        assert!(Packet::decode(&frame(1, input)).is_err());
+    }
+    assert_eq!(
+        Packet::decode(&frame(3, &[9, 255])).unwrap(),
+        Packet::AssignSlot {
+            player: 9,
+            special: true
+        }
+    );
+    assert_eq!(Packet::decode(&frame(253, &[])), Err(Error::Unknown(253)));
+    let max = Packet::Hello("a".repeat(MAX_FRAME - 6)).encode().unwrap();
+    assert_eq!(max.len(), MAX_FRAME);
+    assert_eq!(&max[..2], &[255, 255]);
+    assert!(Packet::Hello("a".repeat(MAX_FRAME - 5)).encode().is_err());
+    assert!(
+        Packet::Buffs {
+            player: 0,
+            types: vec![0]
+        }
+        .encode()
+        .is_err()
+    );
+    let mut oversized = vec![3];
+    oversized.extend([1, 0].repeat(MAX_BUFFS + 1));
+    oversized.extend([0, 0]);
+    assert!(Packet::decode(&frame(50, &oversized)).is_err());
+    let max_buffs = Packet::Buffs {
+        player: 3,
+        types: vec![3; MAX_BUFFS],
+    };
+    assert_eq!(
+        Packet::decode(&frame(50, &max_buffs.encode().unwrap()[3..])).unwrap(),
+        max_buffs
+    );
+}
+
+#[test]
+fn nested_network_text_and_limits() {
+    use NetworkText::*;
+    let packet = Packet::Kick(Key(
+        "k".into(),
+        vec![Formattable("{0}".into(), vec![Literal("é".into())])],
+    ));
+    let payload = b"\x02\x01k\x01\x01\x03{0}\x01\0\x02\xc3\xa9";
+    assert_eq!(&packet.encode().unwrap()[3..], payload);
+    assert_eq!(Packet::decode(&frame(2, payload)).unwrap(), packet);
+    for bad in [&[3, 0][..], &[2, 0, 1], &[0, 0, 0]] {
+        assert!(Packet::decode(&frame(2, bad)).is_err());
+    }
+    let mut nested = [2, 0, 1].repeat(32);
+    nested.extend([0, 0]);
+    assert!(Packet::decode(&frame(2, &nested)).is_err());
+    assert!(
+        Packet::Kick(Key("k".into(), vec![Literal("".into()); 256]))
+            .encode()
+            .is_err()
+    );
+}
+
+proptest! {
+    #[test]
+    fn utf8_string_lengths_count_bytes(text in ".{0,400}") {
+        let packet = Packet::Hello(text);
+        let wire = packet.encode().unwrap();
+        prop_assert_eq!(Packet::decode(&frame(1,&wire[3..])).unwrap(),packet);
+    }
+    #[test]
+    fn arbitrary_wire_data_is_fallible_without_panics(id: u8, payload in proptest::collection::vec(any::<u8>(), 0..1024)) {
+        let _ = Packet::decode(&frame(id,&payload));
+        let _ = Frame::split(&mut BytesMut::from(payload.as_slice()));
+    }
+}
+
+#[test]
+fn responses_recorded_from_official_1458_server() {
+    let cases: &[(&[u8], Packet)] = &[
+        (
+            b"\x05\0\x03\0\0",
+            Packet::AssignSlot {
+                player: 0,
+                special: false,
+            },
+        ),
+        (b"\x03\0\x25", Packet::RequestPassword),
+        (
+            b"\x19\0\x02\x02\x13LegacyMultiplayer.4\0",
+            Packet::Kick(NetworkText::key("LegacyMultiplayer.4")),
+        ),
+        (
+            b"\x19\0\x02\x02\x13LegacyMultiplayer.1\0",
+            Packet::Kick(NetworkText::key("LegacyMultiplayer.1")),
+        ),
+        (
+            b"\x13\0\x02\x02\x0dNet.EmptyName\0",
+            Packet::Kick(NetworkText::key("Net.EmptyName")),
+        ),
+    ];
+    for (raw, expected) in cases {
+        let f = Frame::split(&mut BytesMut::from(*raw)).unwrap().unwrap();
+        assert_eq!(Packet::decode(&f).unwrap(), *expected);
+        assert_eq!(expected.encode().unwrap().as_ref(), *raw);
+    }
+}
