@@ -24,13 +24,15 @@ A type name alone lists its fields and methods. In the dispatch methods the firs
 | Component | Responsibility |
 | --- | --- |
 | terraria-binary | Bounds-checked .NET primitives shared by file and wire readers. |
-| terraria-world | Validated immutable world image, column index, container inspection and lossless save. |
+| terraria-world | Validated immutable world image, column index, world-data projection, row-major tile sections, container and tile entity records, and lossless save. |
 | terraria-protocol | Version-specific typed packets, fallible field codecs and immutable Bytes frames. It has no sockets or global game state. |
-| terraria-network | Tokio listener, bounded admission, socket I/O, connection phases and per-connection character staging. |
+| terraria-network | Tokio listener, bounded admission, socket I/O, connection phases, terrain streaming and the active player roster. |
 | terraria-server | TOML configuration, structured logging, startup and shutdown. |
 | terraria-testkit | Headless TCP client and semantic comparison of two live servers. |
 
-The listener alone owns the free slots. Each admitted socket gets one task and one staging character. A JoinSet returns slots to the listener on completion. A full listener sends the vanilla full-server kick with a bounded write deadline. Reads and writes run in order with TCP backpressure. No unbounded application queue is needed during the handshake. A 90-second absolute join deadline also covers partial reads and blocked writes. Shutdown stops admission and closes all staging sessions.
+The listener alone owns the free slots. Each admitted socket gets one task and one staging character. A JoinSet returns slots to the listener on completion. A full listener sends the vanilla full-server kick with a bounded write deadline. Reads and writes run in order with TCP backpressure. No unbounded application queue is needed during the handshake. A 90-second absolute join deadline also covers partial reads and blocked writes. Shutdown stops admission, closes sockets and drains the roster owner. The immutable world is shared by all peers. At most four blocking workers build and compress sections. Each transfer writes one section and batches a single chest at a time. The sent-section set belongs to the connection.
+
+The active roster has one owner and a bounded 256-event input channel. Its per-peer output queues have 64 entries. A slow consumer is disconnected. Each active connection reads frames and drains its outgoing queue independently, retaining partial TCP reads when a peer broadcasts. The leave event is queued before the listener releases the slot.
 
 ## Reference entry points
 
@@ -38,10 +40,10 @@ The listener alone owns the free slots. Each admitted socket gets one task and o
 | --- | --- |
 | Connections | `Netplay.OnConnectionAccepted` and `FindNextOpenClientSlot` own slot allocation. `RemoteClient` owns a socket, state, termination flags, timeout and sent-section tracking. `NetMessage.CheckBytes` splits the receive buffer and dispatches complete frames. |
 | Messages | `ID.MessageID` names the IDs. `MessageBuffer.GetData` (RVA 0x14d2e4) handles mode and phase checks, field decoding and effects. `NetMessage.SendData` (0x167c7c) writes the matching fields and dispatches to the intended recipients. |
-| Player and inventory | Clients upload join-time appearance, vitals, loadout, buffs and equipment. The receiving server selects the player by connection. `PlayerItemSlotID..cctor` allocates the 990 serialized slot indices. `Item.SetDefaults` and the slot reference type link inventory entries to game definitions. Staged Rust data has no in-world effect yet. |
+| Player and inventory | Clients upload join-time appearance, vitals, loadout, buffs and equipment. The receiving server selects the player by connection. `PlayerItemSlotID..cctor` allocates the 990 serialized slot indices. `Item.SetDefaults` and the slot reference type link inventory entries to game definitions. A successful spawn transfers the staged character into the roster. Active changes use the socket-assigned slot. |
 | World files and generation | `IO.WorldFile.LoadWorld` selects a versioned reader. `LoadWorld_Version2` uses a directory, frame-importance table and section loaders. `SaveWorld_Version2` writes the sections and backpatches their end offsets. `WorldGen` owns generation and terrain updates. `Tile` holds active type, wall, liquid, frames and packed flags. |
 | World transmission | Request 6 transitions vanilla state 1 to 2 and triggers WorldData (7). `NetMessage.SendSection` and `RemoteClient.TileSections` track delivery. `Netplay.GetSectionX/Y` divides tile coordinates by 200 and 150 respectively. `CompressTileBlock` writes x/y as i32 and width/height as i16 inside a DeflateStream, then delegates tile and entity encoding to `CompressTileBlock_Inner`. |
 | Tick and entities | `Main.DedServ` drives a 1000/60 ms accumulator. With no fully joined player it services networking. With joined players it calls the game update. In `DoUpdateInWorld_Inner` the observed relative order is players, NPC spawning, pressure plates, NPCs, projectiles, items, time, world generation/invasion and server/client updates. Other passes occur between these calls. `Player`, `NPC`, `Projectile` and `Item` state is reached through the world update routines. |
 | Shutdown | `Main.DedServ` handles console input and server-loop termination. `WorldFile.InternalSaveWorld` and `DoRollingBackups` are the reference save/backup entry points. |
 
-The planned simulation will own the world and active entities in one fixed-step loop. Network tasks will hand off validated commands via bounded channels once world entry is implemented. Tick order, RNG consumption, individual AI decisions, interactions and persistence of gameplay changes require further implementation and comparison.
+The planned simulation will own the world and active entities in one fixed-step loop. The current event-driven roster owns character state and fans out movement, inventory and chat. A simulation tick can consume validated commands at this boundary. Tick order, RNG consumption, individual AI decisions, interactions and persistence of gameplay changes require further implementation and comparison.

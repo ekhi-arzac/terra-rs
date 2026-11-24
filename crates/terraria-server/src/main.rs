@@ -47,14 +47,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let m = w.metadata();
         info!(world = %m.name, width = m.width, height = m.height, "loaded world");
     }
-    let journey_mode = world.as_ref().is_some_and(|w| w.metadata().game_mode == 3);
     let listener = TcpListener::bind(config.bind).await?;
-    info!(address = %listener.local_addr()?, slots = %config.max_players, "listening for Terraria character uploads");
+    info!(address = %listener.local_addr()?, slots = %config.max_players, "listening for Terraria clients");
     terraria_network::serve(
         listener,
         config.max_players,
         config.password,
-        journey_mode,
+        world,
         async {
             if let Err(error) = tokio::signal::ctrl_c().await {
                 tracing::error!(%error, "shutdown signal handler failed");

@@ -48,13 +48,13 @@ Use `journey-on-classic` to exercise the 1.4.5.8 character/world mode rejection.
 
 ## Current boundary
 
-No matching unmodified graphical client was supplied or found in the configured Steam library. Milestone 2 requires that independent test. World entry, section streaming, in-world broadcasts, combat, progression and modified-world saves are pending. Server-side character mode, social transports and duplicate-name checks remain outside the implemented join behavior. The Rust server has been built and exercised on Linux x86-64. The workspace, including tests and benchmarks, passed `cargo check` for Windows x86-64 GNU and macOS ARM64. Linking and runtime tests on those operating systems are pending.
+Verification uses headless TCP clients and the supplied 1.4.5.8 dedicated server. A stock-client join remains unverified. NPC and event synchronization, simulation, combat and modified-world saves are pending. Server-side character mode, social transports and duplicate-name checks remain outside the implemented join behavior. The Rust server has been built and exercised on Linux x86-64. The workspace, including tests and benchmarks, passed `cargo check` for Windows x86-64 GNU and macOS ARM64. Linking and runtime tests on those operating systems are pending.
 
 ## World-file verification
 
 The oracle-generated small classic world had seed 12345, dimensions 4200 × 1200, spawn (2095, 232), 176 chests and no signs. Rust walked all 5,040,000 tile positions via complete column runs and saved a 2,995,402-byte copy. Both files had SHA-256 `498d48e66d1908686b136c628a56b60c3902be44efe979445a97b41bcdca6aa7`. The official server loaded the Rust copy and accepted a headless handshake. Newly generated worlds can differ in identifiers and timestamps.
 
-The [173-byte WorldData fixture](fixtures/world-info-326.bin) came from that reloaded world. Its frame starts with `ad 00 07`. The decoded prefix gives time 13500, width 4200, height 1200, spawn (2095, 232), world ID 1904902962 and name Oracle. Its SHA-256 is `a31031c608a27622e70d37d62952711aaeb6e9f4b00838900f9c8c8df64b4c71`. Reproduce a capture by sending a character upload and request 6 to the official server. The file is a test input for future packet-7 work.
+The [173-byte WorldData fixture](fixtures/world-info-326.bin) came from that reloaded world. Its frame starts with `ad 00 07`. The decoded prefix gives time 13500, width 4200, height 1200, spawn (2095, 232), world ID 1904902962 and name Oracle. Its SHA-256 is `a31031c608a27622e70d37d62952711aaeb6e9f4b00838900f9c8c8df64b4c71`. Reproduce a capture by sending a character upload and request 6 to the official server. The codec decodes and re-encodes this fixture byte for byte.
 
 ```sh
 cargo run -p terraria-testkit -- capture-world 127.0.0.1:18777 world-info.bin
@@ -68,3 +68,28 @@ TERRARIA_BENCH_WORLD=/path/to/world.wld cargo bench --bench world
 ```
 
 One release-profile run on the world above measured 72.9 ns per equipment encode/frame/decode, 12.8 ms to read and index the file, 1.15 µs per indexed tile lookup, and 1.75 ms for a verified copy under /tmp. These single-machine timings depend on filesystem, cache and hardware. Simulation benchmarks await an executable game tick.
+
+## Headless world entry and multiplayer
+
+Start the official server on a local port, load an existing world and issue its console `save` while idle. Point the native listener at that same saved image. Use separate save directories when running multiple official instances.
+
+```sh
+cargo run -p terraria-testkit -- compare 127.0.0.1:18777 127.0.0.1:7777 enter
+cargo run -p terraria-testkit -- compare 127.0.0.1:18777 127.0.0.1:7777 enter-personal
+cargo run -p terraria-testkit -- peers 127.0.0.1:18777 127.0.0.1:7777
+```
+
+| World and request | Ordered responses compared | Terrain and inventory verified through spawn |
+| --- | ---: | --- |
+| Small classic, seed 12345, world spawn | 393 | 15 sections, 450,000 tiles, 9 chests, 360 slots |
+| Small expert, seed 67890, world and personal spawn at (410, 465) | 2,344 | 39 sections, 1,170,000 tiles, 56 chests, 2,240 slots |
+
+The comparison covers admission, both world-info packets, status, decoded tiles and section objects, chest sizes and contents, banner kills and claims, lunar shields, all six cavern monster types, spawn invitation and entry acknowledgement. The reference also sent NPC updates and buffs, game modules, event state, housing, quest and host information. The harness reports their IDs and counts. These messages remain outside the equality check.
+
+Before the official server saved its settled terrain, the initial 15 sections differed at 241 tile positions in the classic world and 42 in the expert world. The native server serves saved liquid levels. The testkit compares them exactly. Taking the settled save gave an exact terrain match in the two runs above. The reference advances time while a player is active, so subsequent runs can also report a genuine difference in packet 7.
+
+The two-player scenario ran on both implementations. Each observed slot activation, the same movement update, chat text with the sender’s assigned slot and RGB on both sockets, a follow-up tile section, departure and slot reuse. The reference additionally synchronizes NPCs, event modules and more player state during entry.
+
+The offline regression world `fixtures/entry-326.wld` retains the classic world's real extended header and auxiliary sections, with a small constructed terrain and chest. The supplied server loaded it and emitted `fixtures/entry-world-data-326.bin`. The section fixture `fixtures/tile-section-326.bin` was captured separately from the classic world at tile (1600, 150). It includes chest 26.
+
+On the current classic snapshot, release benchmarks measured 11.6 ms to load and index the world, 379 µs to read and compress a spawn section, and 1.91 ms to stage, verify and publish an exact copy.

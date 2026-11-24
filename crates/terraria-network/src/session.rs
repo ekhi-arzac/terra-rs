@@ -1,19 +1,22 @@
 use std::collections::BTreeMap;
 use terraria_protocol::{Appearance, Equipment, GREETING, NetworkText, Packet, Vitals};
 
-const EQUIPMENT_SLOTS: i16 = 990;
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum Phase {
     AwaitHello,
     AwaitPassword,
     UploadingCharacter,
+    AwaitSections,
+    SendingSections,
+    AwaitSpawn,
+    Active,
     Closed,
 }
 
 /// Connection-owned staging state. Only the listener chooses the player identity.
 #[derive(Default)]
 pub struct Character {
+    pub spawn: Option<terraria_protocol::Spawn>,
     pub appearance: Option<Appearance>,
     pub life: Option<Vitals>,
     pub mana: Option<Vitals>,
@@ -22,21 +25,32 @@ pub struct Character {
     pub equipment: BTreeMap<i16, Equipment>,
 }
 
-pub struct Session {
+pub struct Session<'w> {
+    world: Option<&'w terraria_protocol::WorldData>,
     pub(crate) phase: Phase,
     slot: u8,
     journey_mode: bool,
     character: Character,
 }
 
-impl Session {
+impl<'w> Session<'w> {
     pub fn new(slot: u8, journey_mode: bool) -> Self {
         Self {
+            world: None,
             phase: Phase::AwaitHello,
             slot,
             journey_mode,
             character: Character::default(),
         }
+    }
+    pub fn for_world(slot: u8, world: &'w terraria_protocol::WorldData) -> Self {
+        Self {
+            world: Some(world),
+            ..Self::new(slot, world.game_mode == 3)
+        }
+    }
+    pub(crate) fn into_character(self) -> Character {
+        self.character
     }
     pub fn phase(&self) -> &Phase {
         &self.phase
@@ -72,6 +86,29 @@ impl Session {
             }
             (Phase::AwaitPassword, Packet::Password(p)) if p == password => self.admit(),
             (Phase::AwaitPassword, _) => self.close(NetworkText::key("LegacyMultiplayer.1")),
+            (Phase::UploadingCharacter | Phase::AwaitSections, Packet::RequestWorld) => {
+                if let Some(world) = self.world {
+                    self.phase = Phase::AwaitSections;
+                    Some(Packet::WorldData(Box::new(world.clone())))
+                } else {
+                    self.close(NetworkText::Literal(
+                        "No world is configured on this server.".into(),
+                    ))
+                }
+            }
+            (Phase::AwaitSections, Packet::RequestSections { .. }) => {
+                self.phase = Phase::SendingSections;
+                self.world
+                    .map(|data| Packet::WorldData(Box::new(data.clone())))
+            }
+            (Phase::AwaitSpawn, Packet::Spawn(mut spawn))
+                if self.character.appearance.is_some() && spawn.team <= 5 =>
+            {
+                spawn.player = self.slot;
+                self.character.spawn = Some(spawn);
+                self.phase = Phase::Active;
+                Some(Packet::FinishedConnecting)
+            }
             (Phase::UploadingCharacter, packet) => self.upload(packet),
             _ => self.close(NetworkText::key("LegacyMultiplayer.2")),
         }
@@ -126,11 +163,7 @@ impl Session {
             } if index < 3 => {
                 self.character.loadout = Some((index, hidden_accessories));
             }
-            Packet::Equipment(mut e)
-                if (0..EQUIPMENT_SLOTS).contains(&e.slot)
-                    && (0..6196).contains(&e.item)
-                    && e.stack >= 0 =>
-            {
+            Packet::Equipment(mut e) if e.valid() => {
                 e.player = self.slot;
                 if e.stack == 0 || e.item == 0 {
                     self.character.equipment.remove(&e.slot);
@@ -140,11 +173,6 @@ impl Session {
             }
             // GetData consumes the UUID without storing it. A direct server has no host token.
             Packet::ClientUuid(_) | Packet::HostToken(_) => {}
-            Packet::RequestWorld => {
-                return self.close(NetworkText::Literal(
-                    "World synchronization is not implemented on this Rust server.".into(),
-                ));
-            }
             _ => return self.close(NetworkText::key("LegacyMultiplayer.2")),
         }
         None

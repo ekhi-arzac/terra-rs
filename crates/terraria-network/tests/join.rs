@@ -125,7 +125,7 @@ async fn loopback_admission_capacity_reconnect_and_shutdown() {
             listener,
             NonZeroU8::new(2).unwrap(),
             String::new(),
-            false,
+            None,
             async {
                 let _ = stopped.await;
             },

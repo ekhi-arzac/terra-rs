@@ -2,21 +2,21 @@
 
 | Milestone | Status | Evidence |
 | --- | --- | --- |
-| 0 — Reference analysis | Complete for the initial deliverable | Identified the exact managed binary and release, documented disassembly and subsystem entry points, built the workspace. |
-| 1 — Protocol foundation | Complete for the documented join packet set | Bounded frames, versioned typed codecs, guarded session transitions, fixture/round-trip/malformed tests for all 14 packet types, property tests and fragmented/coalesced input tests. |
-| 2 — Connectivity | Implemented through character upload. Official client verification pending. | Configured Tokio listener, password negotiation, slot selection and reuse, headless direct-IP tests, seven live scenario comparisons against the supplied server. |
-| 3 — World loading and sync | Disk loading and lossless copy implemented. Network synchronization pending. | Metadata, column-indexed tiles, walls, liquids, frame flags, chests and signs. Byte-identical save and official-server reload of a generated world. |
-| 4–7 | Incomplete | Gameplay, in-world multiplayer, modified-world saves and administration remain. Packet and world microbenchmarks are runnable. |
-
-The Rust request-world handler explicitly disconnects at the first unsupported world step. A matching graphical client is required to exercise the connection UI and verify the join milestone.
+| 0 — Reference analysis | Initial scope complete | Identified the supplied 1.4.5.8 assembly, release 326 and relevant loaders and dispatch methods. |
+| 1 — Protocol foundation | Implemented for the supported packet set | Bounded framing, directional module decoding, typed layouts, malformed-input tests and recorded fixtures. |
+| 2 — Connectivity | Headless admission through world entry verified | Seven admission scenarios against the official server, plus world entry and two concurrent named players. Independent stock-client verification is deferred. |
+| 3 — World loading and synchronization | Headless entry from existing worlds works | World header, compressed sections, chests and all slots, signs, tile entity records, banner state, lunar tower shields, cavern variants and follow-up section requests. Two live world-entry comparisons reached packet 129. NPC, quest, biome and other module state remain incomplete. |
+| 4 — Basic multiplayer | Movement, chat and membership verified | One roster owner, per-socket identity, player snapshots, visible inventory and vitals. Two headless clients observed movement, chat, departure and reconnection on each server. Chest interaction and area-of-interest updates during movement remain open. |
+| 5 — Gameplay | Early world state only | Cavern monster variants reproduce the seeded reference selection. Active NPCs, combat, liquids, item pickup, wiring and world updates still need simulation. |
+| 6 — Persistence and administration | Read-only world snapshots, verified copies and configuration | The server accepts TOML configuration, passwords, slot limits and graceful shutdown. Modified-world saves, rolling backups and administration commands remain open. |
+| 7 — Compatibility and performance | Ongoing | Rust headless differential scenarios and packet/world/section benchmarks. |
 
 ## Verification
 
-Rust stable 1.100.0 on Linux x86-64 passed formatting, Clippy with warnings denied, the 17 workspace tests, and the release build. The packet and file benchmarks ran against the generated reference world. All targets type-checked for `x86_64-pc-windows-gnu` and `aarch64-apple-darwin`. The [compatibility record](compatibility.md) includes the reference scenarios, world hash and platform limits.
+Linux x86-64 passed all 25 workspace tests, formatting, Clippy with warnings denied and the optimized build. Windows x86-64 GNU and macOS ARM64 passed all-target type checks. The compact fixture world also loaded in the supplied server. The classic and expert entry runs compared 54 sections, 1,620,000 tiles and 2,600 chest slots in total. Additional reference-only packets are listed by the harness. Reproduction commands and the comparison scope are in the [compatibility record](compatibility.md).
 
 ## Next engineering tasks
 
-1. Exercise the current build with a stock 1.4.5.8 client and preserve a direct-IP join trace.
-2. Map each world field consumed by packet 7 to validated disk metadata or server-owned runtime state. Compare the encoded fields with the captured 173-byte reference frame and additional world states.
-3. Implement the section request and transfer sequence with a bounded tile decoder, send tracking and differential tests through spawn.
-4. Establish one simulation owner before admitting players to the active world. Add movement, interactions, persistence and benchmarks as those paths become executable.
+1. Load persisted NPC records and generate their join snapshots, buffs and housing from release-326 NPC defaults. Add a comparison using a populated town.
+2. Implement remaining entry modules and requests driven by movement. Keep the reported reference-only packet counts visible as coverage expands.
+3. Extend the roster owner with the fixed-step world update. Begin mutable interactions with chest ownership, authoritative inventory changes and save/reload tests.

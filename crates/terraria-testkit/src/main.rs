@@ -1,4 +1,6 @@
 //! Direct TCP probes. Keep reference and candidate isolated and idle for slot comparisons.
+mod entry;
+mod peers;
 use std::{env, error::Error, fs, io, net::SocketAddr, path::Path, time::Duration};
 use terraria_network::{read_frame, write_packet};
 use terraria_protocol::{Appearance, Equipment, GREETING, NetworkText, Packet, Vitals};
@@ -9,6 +11,8 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 #[derive(Clone, Copy, PartialEq)]
 enum Scenario {
     Join,
+    Enter,
+    EnterPersonal,
     WrongVersion,
     WrongPassword,
     Upload,
@@ -18,12 +22,14 @@ enum Scenario {
 impl Scenario {
     fn parse(s: &str) -> Result<Self> {
         match s {
+            "enter" => Ok(Self::Enter),
+            "enter-personal" => Ok(Self::EnterPersonal),
             "join" => Ok(Self::Join),
             "wrong-version" => Ok(Self::WrongVersion),
             "wrong-password" => Ok(Self::WrongPassword),
             "upload" => Ok(Self::Upload),
             "journey-on-classic" => Ok(Self::JourneyOnClassic),
-            _ => Err("scenario must be join, wrong-version, wrong-password, upload or journey-on-classic".into()),
+            _ => Err("scenario must be enter, enter-personal, join, wrong-version, wrong-password, upload or journey-on-classic".into()),
         }
     }
 }
@@ -66,7 +72,10 @@ async fn upload(stream: &mut TcpStream, slot: u8) -> Result<()> {
         maximum: 100,
     };
     for p in [
-        Packet::Appearance(appearance(slot)),
+        Packet::Appearance(Appearance {
+            name: format!("Probe{slot}"),
+            ..appearance(slot)
+        }),
         Packet::ClientUuid("direct-tcp-probe".into()),
         Packet::Life(v),
         Packet::Mana(Vitals {
@@ -144,6 +153,13 @@ async fn probe(
         if let Some(path) = capture {
             upload(&mut stream, player).await?;
             capture_world(&mut stream, path).await?;
+        } else if matches!(scenario, Scenario::Enter | Scenario::EnterPersonal) {
+            let spawn = if scenario == Scenario::Enter {
+                [-1, -1]
+            } else {
+                [410, 465]
+            };
+            entry::run(&mut stream, player, &mut log, spawn).await?;
         } else if matches!(scenario, Scenario::Upload | Scenario::JourneyOnClassic) {
             let mut a = appearance(player);
             if scenario == Scenario::Upload {
@@ -166,6 +182,18 @@ fn validate(scenario: Scenario, responses: &[Packet]) -> Result<()> {
         .unwrap_or(responses);
     let expected_kick = |key| Packet::Kick(NetworkText::key(key));
     let valid = match scenario {
+        Scenario::Enter | Scenario::EnterPersonal => matches!(
+            authenticated,
+            [
+                Packet::AssignSlot { .. },
+                Packet::WorldData(_),
+                Packet::WorldData(_),
+                Packet::Status { .. },
+                ..,
+                Packet::SpawnAllowed,
+                Packet::FinishedConnecting
+            ]
+        ),
         Scenario::WrongVersion => responses == [expected_kick("LegacyMultiplayer.4")],
         Scenario::WrongPassword => {
             responses
@@ -200,6 +228,20 @@ fn compare(reference: &[Packet], candidate: &[Packet]) -> Result<()> {
         .zip(candidate)
         .position(|(a, b)| a != b)
         .unwrap_or(reference.len().min(candidate.len()));
+    if let (Some(Packet::TileSection(a)), Some(Packet::TileSection(b))) =
+        (reference.get(index), candidate.get(index))
+    {
+        let cells = |s: &terraria_protocol::section::TileSection| {
+            s.runs
+                .iter()
+                .flat_map(|r| std::iter::repeat_n(r.tile, usize::from(r.count)))
+                .collect::<Vec<_>>()
+        };
+        let a_tiles = cells(a);
+        let b_tiles = cells(b);
+        let first = a_tiles.iter().zip(&b_tiles).position(|(a, b)| a != b);
+        return Err(format!("first differing section at response {}, origins {:?}/{:?}, first differing tile {:?}, chest/sign/entity lists equal {}/{}/{}",index+1,a.origin,b.origin,first.map(|i|(a.origin[0]+(i%usize::from(a.size[0])) as i32,a.origin[1]+(i/usize::from(a.size[0])) as i32,a_tiles[i],b_tiles[i])),a.chests==b.chests,a.signs==b.signs,a.entities==b.entities).into());
+    }
     Err(io::Error::other(format!(
         "first mismatch at response {}: reference {:?}, candidate {:?}",
         index + 1,
@@ -212,16 +254,30 @@ fn compare(reference: &[Packet], candidate: &[Packet]) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<_> = env::args().skip(1).collect();
+    if let [cmd, addresses @ ..] = args.as_slice()
+        && cmd == "peers"
+        && (1..=2).contains(&addresses.len())
+    {
+        let password = env::var("TERRARIA_PROBE_PASSWORD").ok();
+        for addr in addresses {
+            timeout(
+                Duration::from_secs(30),
+                peers::run(addr.parse()?, password.as_deref()),
+            )
+            .await??;
+        }
+        return Ok(());
+    }
     let (left,right,scenario,capture) = match args.as_slice() {
         [cmd,addr,case] if cmd == "probe" => (addr,None,Scenario::parse(case)?,None),
         [cmd,a,b,case] if cmd == "compare" => (a,Some(b),Scenario::parse(case)?,None),
         [cmd,addr,path] if cmd == "capture-world" => (addr,None,Scenario::Join,Some(Path::new(path))),
-        _ => return Err("usage: terraria-testkit probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
+        _ => return Err("usage: terraria-testkit peers ADDR [ADDR] | probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
     };
     let password = env::var("TERRARIA_PROBE_PASSWORD").ok();
     let run = |address: SocketAddr| {
         timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(30),
             probe(address, scenario, password.as_deref(), capture),
         )
     };
@@ -230,7 +286,7 @@ async fn main() -> Result<()> {
         let candidate = run(right.parse()?).await??;
         compare(&reference, &candidate)?;
         validate(scenario, &candidate)?;
-        println!("Matched {} response(s).", reference.len());
+        println!("Matched {} compared responses.", reference.len());
     } else {
         validate(scenario, &reference)?;
     }
