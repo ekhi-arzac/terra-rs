@@ -1,5 +1,7 @@
 //! Lossless inspection of the sectioned world format written by release 326.
 mod cavern;
+mod npcs;
+pub use npcs::{Npc, TownNpc};
 mod join;
 pub use join::JoinState;
 mod sections;
@@ -85,6 +87,8 @@ pub struct World {
     chests: Vec<Chest>,
     signs: Vec<Sign>,
     entities: Vec<TileEntity>,
+    npcs: Vec<Npc>,
+    shimmered: Vec<i32>,
 }
 
 impl World {
@@ -174,10 +178,13 @@ impl World {
         columns.push(offsets[2]);
         let chests = read_chests(&data[offsets[2]..offsets[3]])?;
         let signs = read_signs(&data[offsets[3]..offsets[4]])?;
+        let (shimmered, npcs) = npcs::read(&data[offsets[4]..offsets[5]])?;
         let entities = sections::entities(&data[offsets[5]..offsets[6]])?;
         Ok(Self {
             data,
             entities,
+            npcs,
+            shimmered,
             meta,
             flags,
             important,
@@ -190,6 +197,12 @@ impl World {
         })
     }
 
+    pub fn npcs(&self) -> &[Npc] {
+        &self.npcs
+    }
+    pub fn shimmered_npc_types(&self) -> &[i32] {
+        &self.shimmered
+    }
     pub fn metadata(&self) -> &Metadata {
         &self.meta
     }

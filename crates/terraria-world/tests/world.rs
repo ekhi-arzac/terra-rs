@@ -60,7 +60,9 @@ fn fixture() -> Vec<u8> {
     data.extend(2i32.to_le_bytes());
     for i in 4..10 {
         section(&mut data, i);
-        if i == 5 {
+        if i == 4 {
+            data.extend([0; 6]);
+        } else if i == 5 {
             data.extend(0i32.to_le_bytes());
         } else {
             data.extend([0xaa, i as u8]);
@@ -211,4 +213,19 @@ fn progressed_header_populates_banner_counts_and_reloaded_tower_strength() {
     assert_eq!(state.banners.kills[7], 1234);
     assert_eq!(state.banners.claimable[7], 257);
     assert_eq!(state.shields, [50, 0, 0, 0]);
+}
+
+#[test]
+fn official_town_records_preserve_housing_and_variations() {
+    let w = World::parse(include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec()).unwrap();
+    assert!(w.shimmered_npc_types().is_empty());
+    assert_eq!(w.npcs().len(), 2);
+    assert_eq!(w.npcs()[0].kind, 37);
+    let guide = &w.npcs()[1];
+    assert_eq!(guide.kind, 22);
+    let town = guide.town.as_ref().unwrap();
+    assert_eq!(town.name, "Tanner");
+    assert_eq!(town.home, [2095, 232]);
+    assert!(town.homeless);
+    assert_eq!(town.variation, Some(0));
 }

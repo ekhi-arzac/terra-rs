@@ -24,13 +24,28 @@ fn main() -> Result<(), Box<dyn Error>> {
                 w.signs().len()
             );
         }
+        [op, path] if op == "npcs" => {
+            let world = World::load(path)?;
+            for (slot, npc) in world.npcs().iter().enumerate() {
+                println!(
+                    "slot {slot}, type {}, position {:?}",
+                    npc.kind, npc.position
+                );
+                if let Some(town) = &npc.town {
+                    println!(
+                        "  {:?}, home {:?}, homeless {}",
+                        town.name, town.home, town.homeless
+                    );
+                }
+            }
+        }
         [op, path, x, y] if op == "tile" => {
             println!("{:?}", World::load(path)?.tile(coord(x)?, coord(y)?)?)
         }
         [op, src, dst] if op == "copy" => World::load(src)?.save(dst)?,
         _ => {
             return Err(io::Error::other(
-                "usage: terraria-world inspect FILE | tile FILE X Y | copy SOURCE DEST",
+                "usage: terraria-world inspect FILE | npcs FILE | tile FILE X Y | copy SOURCE DEST",
             )
             .into());
         }

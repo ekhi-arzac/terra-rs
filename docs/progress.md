@@ -13,10 +13,10 @@
 
 ## Verification
 
-Linux x86-64 passed all 25 workspace tests, formatting, Clippy with warnings denied and the optimized build. Windows x86-64 GNU and macOS ARM64 passed all-target type checks. The compact fixture world also loaded in the supplied server. The classic and expert entry runs compared 54 sections, 1,620,000 tiles and 2,600 chest slots in total. Additional reference-only packets are listed by the harness. Reproduction commands and the comparison scope are in the [compatibility record](compatibility.md).
+Linux x86-64 passed the workspace tests, formatting, Clippy with warnings denied and the optimized build. Windows x86-64 GNU and macOS ARM64 passed all-target type checks. The compact fixture world also loaded in the supplied server. The classic and expert entry runs compared 54 sections, 1,620,000 tiles and 2,600 chest slots in total. Additional reference-only packets are listed by the harness. Reproduction commands and the comparison scope are in the [compatibility record](compatibility.md).
 
 ## Next engineering tasks
 
-1. Load persisted NPC records and generate their join snapshots, buffs and housing from release-326 NPC defaults. Add a comparison using a populated town.
+1. Generate join snapshots for the parsed town and persistent NPC records, buffs and housing from release-326 NPC defaults. Add a comparison using a populated town.
 2. Implement remaining entry modules and requests driven by movement. Keep the reported reference-only packet counts visible as coverage expands.
 3. Extend the roster owner with the fixed-step world update. Begin mutable interactions with chest ownership, authoritative inventory changes and save/reload tests.
