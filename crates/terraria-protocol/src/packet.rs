@@ -92,6 +92,11 @@ pub enum Packet {
     },
     Spawn(Spawn),
     Movement(crate::Movement),
+    PlayerZones {
+        player: u8,
+        zones: [u8; 5],
+        town_npcs: u8,
+    },
     PlayerActive {
         player: u8,
         active: bool,
@@ -108,6 +113,7 @@ pub enum Packet {
     BannerState(Box<crate::BannerState>),
     TowerShields([u16; 4]),
     CavernMonsters([u16; 6]),
+    Ping,
     SpawnAllowed,
     RequestSection([u16; 2]),
     FinishedConnecting,
@@ -145,11 +151,13 @@ impl Packet {
             Self::ChestItem { .. } => 32,
             Self::Spawn(_) => 12,
             Self::Movement(_) => 13,
+            Self::PlayerZones { .. } => 36,
             Self::PlayerActive { .. } => 14,
             Self::ChatCommand { .. } | Self::ChatMessage { .. } => 82,
             Self::BannerState(_) => 82,
             Self::TowerShields(_) => 101,
             Self::CavernMonsters(_) => 136,
+            Self::Ping => 154,
             Self::SpawnAllowed => 49,
             Self::RequestSection(_) => 159,
             Self::FinishedConnecting => 129,
@@ -256,6 +264,11 @@ impl Packet {
                 team: r.byte()?,
                 context: r.byte()?,
             }),
+            36 => Self::PlayerZones {
+                player: r.byte()?,
+                zones: r.take()?,
+                town_npcs: r.byte()?,
+            },
             13 => Self::Movement(crate::Movement::read(&mut r)?),
             14 => Self::PlayerActive {
                 player: r.byte()?,
@@ -276,6 +289,7 @@ impl Packet {
             },
             101 => Self::TowerShields(r.i16s::<4>()?.map(|v| v as u16)),
             136 => Self::CavernMonsters(r.i16s::<6>()?.map(|v| v as u16)),
+            154 => Self::Ping,
             49 => Self::SpawnAllowed,
             159 => Self::RequestSection([r.u16()?, r.u16()?]),
             129 => Self::FinishedConnecting,
@@ -405,6 +419,16 @@ impl Packet {
                     out.put_u16_le(n);
                 }
             }
+            Self::PlayerZones {
+                player,
+                zones,
+                town_npcs,
+            } => {
+                out.put_u8(*player);
+                out.extend_from_slice(zones);
+                out.put_u8(*town_npcs);
+            }
+            Self::Ping => {}
             Self::Movement(m) => m.write(&mut out)?,
             Self::PlayerActive { player, active } => {
                 out.extend_from_slice(&[*player, u8::from(*active)])

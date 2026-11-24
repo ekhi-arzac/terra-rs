@@ -48,7 +48,7 @@ Use `journey-on-classic` to exercise the 1.4.5.8 character/world mode rejection.
 
 ## Current boundary
 
-Verification uses headless TCP clients and the supplied 1.4.5.8 dedicated server. A stock-client join remains unverified. NPC and event synchronization, simulation, combat and modified-world saves are pending. Server-side character mode, social transports and duplicate-name checks remain outside the implemented join behavior. The Rust server has been built and exercised on Linux x86-64. The workspace, including tests and benchmarks, passed `cargo check` for Windows x86-64 GNU and macOS ARM64. Linking and runtime tests on those operating systems are pending.
+Verification uses headless TCP clients and the supplied 1.4.5.8 dedicated server. The user also confirmed that the installed stock 1.4.5.8 client stayed connected to tesst. After spawn the client sent creative powers module 6, a seven-byte biome report and an empty latency ping. NPC and event synchronization, simulation, combat and modified-world saves are pending. Server-side character mode, social transports and duplicate-name checks remain outside the implemented join behavior. The Rust server has been built and exercised on Linux x86-64. The workspace, including tests and benchmarks, passed `cargo check` for Windows x86-64 GNU and macOS ARM64. Linking and runtime tests on those operating systems are pending.
 
 ## World-file verification
 

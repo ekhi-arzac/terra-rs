@@ -61,6 +61,12 @@ fn entry_and_player_wire_layouts_roundtrip_and_reject_bad_lengths() {
         Packet::BannerState(Box::default()),
         Packet::TowerShields([0, 50, 100, 0]),
         Packet::CavernMonsters([494, 494, 494, 497, 496, 496]),
+        Packet::PlayerZones {
+            player: 1,
+            zones: [8, 0, 0, 0, 4],
+            town_npcs: 2,
+        },
+        Packet::Ping,
         Packet::SpawnAllowed,
         Packet::Spawn(Spawn {
             player: 2,

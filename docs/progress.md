@@ -4,7 +4,7 @@
 | --- | --- | --- |
 | 0 — Reference analysis | Initial scope complete | Identified the supplied 1.4.5.8 assembly, release 326 and relevant loaders and dispatch methods. |
 | 1 — Protocol foundation | Implemented for the supported packet set | Bounded framing, directional module decoding, typed layouts, malformed-input tests and recorded fixtures. |
-| 2 — Connectivity | Headless admission through world entry verified | Seven admission scenarios against the official server, plus world entry and two concurrent named players. Independent stock-client verification is deferred. |
+| 2 — Connectivity | Stock client and headless world entry verified | Seven admission scenarios against the official server, plus world entry and two concurrent named players. The user joined tesst with the stock 1.4.5.8 client and confirmed the connection stayed open. |
 | 3 — World loading and synchronization | Headless entry from existing worlds works | World header, compressed sections, chests and all slots, signs, tile entity records, banner state, lunar tower shields, cavern variants and follow-up section requests. Two live world-entry comparisons reached packet 129. NPC, quest, biome and other module state remain incomplete. |
 | 4 — Basic multiplayer | Movement, chat and membership verified | One roster owner, per-socket identity, player snapshots, visible inventory and vitals. Two headless clients observed movement, chat, departure and reconnection on each server. Chest interaction and area-of-interest updates during movement remain open. |
 | 5 — Gameplay | Early world state only | Cavern monster variants reproduce the seeded reference selection. Active NPCs, combat, liquids, item pickup, wiring and world updates still need simulation. |

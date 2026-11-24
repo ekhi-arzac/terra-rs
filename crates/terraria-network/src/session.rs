@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use terraria_protocol::{Appearance, Equipment, GREETING, NetworkText, Packet, Vitals};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     AwaitHello,
     AwaitPassword,

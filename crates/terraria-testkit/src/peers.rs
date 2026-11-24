@@ -86,6 +86,15 @@ pub(super) async fn run(addr: SocketAddr, password: Option<&str>) -> Result<()> 
         },
     )
     .await?;
+    let zones = Packet::PlayerZones {
+        player: second,
+        zones: [8, 0, 0, 0, 0],
+        town_npcs: 1,
+    };
+    write_packet(&mut sender, &zones).await?;
+    observe(&mut observer, &zones).await?;
+    write_packet(&mut sender, &Packet::Ping).await?;
+    observe(&mut sender, &Packet::Ping).await?;
     let movement = Movement {
         player: second,
         flags: [72, 16, 0, 0],

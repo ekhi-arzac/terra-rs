@@ -22,6 +22,7 @@ pub(super) enum Event {
 struct Player {
     character: Box<Character>,
     movement: Option<Movement>,
+    zones: Option<([u8; 5], u8)>,
     out: Option<mpsc::Sender<Bytes>>,
 }
 impl Player {
@@ -37,6 +38,13 @@ impl Player {
         })?;
         if let Some(a) = &self.character.appearance {
             add(Packet::Appearance(a.clone()))?;
+        }
+        if let Some((zones, town_npcs)) = self.zones {
+            add(Packet::PlayerZones {
+                player: slot,
+                zones,
+                town_npcs,
+            })?;
         }
         if let Some(m) = self.movement {
             add(Packet::Movement(m))?;
@@ -110,6 +118,7 @@ impl Roster {
                 let player = Player {
                     character,
                     movement: None,
+                    zones: None,
                     out: Some(out.clone()),
                 };
                 let mut roster = BytesMut::new();
@@ -142,6 +151,13 @@ impl Roster {
                     return Ok(());
                 };
                 match packet {
+                    Packet::Ping => {
+                        if let Some(out) = &peer.out
+                            && out.try_send(Packet::Ping.encode()?).is_err()
+                        {
+                            peer.out = None;
+                        }
+                    }
                     Packet::ChatCommand { text, .. } => {
                         let flags = peer
                             .character
@@ -169,6 +185,9 @@ impl Roster {
                     }
                     p => {
                         match &p {
+                            Packet::PlayerZones {
+                                zones, town_npcs, ..
+                            } => peer.zones = Some((*zones, *town_npcs)),
                             Packet::Movement(m) => peer.movement = Some(*m),
                             Packet::Life(v) => peer.character.life = Some(*v),
                             Packet::Mana(v) => peer.character.mana = Some(*v),
@@ -200,11 +219,13 @@ impl Roster {
 }
 
 fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, ProtocolError> {
-    if !matches!(frame.id, 5 | 13 | 16 | 42 | 50 | 82 | 147) {
+    if !matches!(frame.id, 5 | 13 | 16 | 36 | 42 | 50 | 82 | 147 | 154) {
         return Err(ProtocolError::Unknown(frame.id));
     }
     let mut packet = Packet::decode_client(frame)?;
     match &mut packet {
+        Packet::PlayerZones { player, .. } => *player = slot,
+        Packet::Ping => {}
         Packet::Movement(m) => m.player = slot,
         Packet::Life(v) => {
             v.player = slot;
@@ -240,7 +261,20 @@ pub(super) async fn play(
     let (section_tx, mut section_rx) = mpsc::channel(4);
     let (mut r, mut w) = stream.split();
     let read = async {
+        let mut reported_ids = [false; 163];
+        let mut reported_modules = std::collections::BTreeSet::new();
         while let Some(frame) = read_frame(&mut r).await? {
+            if frame.id == 82
+                && let Some(header) = frame.payload.first_chunk::<2>()
+            {
+                let module = u16::from_le_bytes(*header);
+                if module != 1 {
+                    if reported_modules.len() < 32 && reported_modules.insert(module) {
+                        tracing::info!(slot, module, "ignoring unimplemented active net module");
+                    }
+                    continue;
+                }
+            }
             if frame.id == 159
                 && let Packet::RequestSection(index) = Packet::decode_client(&frame)?
             {
@@ -250,7 +284,23 @@ pub(super) async fn play(
                     .map_err(|_| io::Error::other("terrain writer closed"))?;
                 continue;
             }
-            let packet = update(&frame, slot)?;
+            let packet = match update(&frame, slot) {
+                Ok(p) => p,
+                Err(ProtocolError::Unknown(id)) if (1..=162).contains(&id) => {
+                    if !std::mem::replace(&mut reported_ids[usize::from(id)], true) {
+                        tracing::info!(
+                            slot,
+                            packet_id = id,
+                            "unimplemented active packet discarded"
+                        );
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(slot,packet_id=frame.id,error=%e,"active packet rejected");
+                    return Err(e.into());
+                }
+            };
             events
                 .send(Event::Update { slot, packet })
                 .await

@@ -37,6 +37,8 @@ Fields in each row appear in wire order. Directions describe the direct join seq
 | 155 SyncChestSize | S → C | i16 chest index, i16 capacity. |
 | 159 RequestSection | C → S | u16 section X, u16 section Y. |
 | 16 PlayerLifeMana | C → S | u8 player, i16 current life, i16 maximum life. |
+| 36 PlayerZone | Both | u8 player, five u8 zone masks and u8 nearby town NPC count. The roster assigns the sender slot and forwards the update. |
+| 154 Ping | Both | Empty. The server echoes the packet to its sender. |
 | 37 RequestPassword | S → C | Empty. |
 | 38 SendPassword | C → S | string password. |
 | 42 Unknown42 / mana | C → S | u8 player, i16 current mana, i16 maximum mana. |
@@ -54,7 +56,7 @@ For packet 4, difficulty flags at bits 0, 1, 2, 3 mean mediumcore, hardcore, ext
 3. A matching ID 38 password yields ID 3 and state 1. A wrong password yields `LegacyMultiplayer.1`. Rust accepts ID 38 only while awaiting the password.
 4. After ID 3 the client emits 4, 68, 16, 42, 50, 147, repeated 5s for inventory and banks, optional 161, then 6. The connection determines player identity. The Rust session bounds equipment indices to 0–989 and applies the observed appearance and life limits. The name limit uses 20 UTF-16 code units after trimming. Game mode 3 accepts Journey characters. Other modes accept non-Journey characters.
 5. A configured world answers 6 with 7. Request 8 returns another 7, then status 9 and the sections surrounding the world spawn. A valid personal or team spawn can extend this area. The server visits section X first and then Y within each column, clips at the world edges and tracks sections sent on that connection.
-6. For each section the native server sends 10, then 155 and one 32 per slot for each chest. After the terrain, the banner full state, lunar shields and cavern monster types are sent. Packet 49 then invites the client to spawn. A named character sends 12, the roster registers the active player and the server sends 129. Request 159 can fetch additional sections during play. Unknown messages, unsupported interactions and illegal phase transitions close the session.
+6. For each section the native server sends 10, then 155 and one 32 per slot for each chest. After the terrain, the banner full state, lunar shields and cavern monster types are sent. Packet 49 then invites the client to spawn. A named character sends 12, the roster registers the active player and the server sends 129. Request 159 can fetch additional sections during play. Join phases enforce packet direction and ordering. During play, the server discards unimplemented release-326 message IDs and net modules without applying their contents. This includes the creative powers module (6) sent by the stock client on entry. The server logs discarded IDs, checks the layouts of implemented messages and rejects invalid framing.
 
 Character and packet limits come from `GetData`, `SendData`, `Player..cctor`, `PlayerItemSlotID..cctor`, `ItemID..cctor`, `PlayerVariantID..cctor` and `WriteAccessoryVisibility`. The signed wire slot in packet 5 is distinct from the server-assigned u8 player.
 

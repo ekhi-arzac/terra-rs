@@ -75,6 +75,7 @@ async fn connection(
                 frame.id,
                 1 | 4 | 5 | 6 | 8 | 12 | 16 | 38 | 42 | 50 | 68 | 147 | 161
             ) {
+                tracing::warn!(slot, packet_id=frame.id, phase=?session.phase(), "unexpected join packet");
                 write_packet(
                     &mut stream,
                     &Packet::Kick(NetworkText::key("LegacyMultiplayer.2")),
@@ -85,6 +86,7 @@ async fn connection(
             let packet = match Packet::decode(&frame) {
                 Ok(p) => p,
                 Err(e) => {
+                    tracing::warn!(slot, packet_id=frame.id, phase=?session.phase(), error=%e, "invalid join payload");
                     // Complete but unsupported or malformed payload. The framing is still intact.
                     write_packet(
                         &mut stream,
@@ -98,7 +100,11 @@ async fn connection(
                 Packet::RequestSections { spawn, team } => Some((spawn, team)),
                 _ => None,
             };
+            let phase = *session.phase();
             if let Some(response) = session.handle(packet, password) {
+                if session.phase() == &Phase::Closed {
+                    tracing::warn!(slot, packet_id = frame.id, ?phase, "join rejected");
+                }
                 if session.phase() == &Phase::Active {
                     break;
                 }
