@@ -52,16 +52,20 @@ impl Frame {
 }
 
 pub(crate) fn put_string(out: &mut BytesMut, value: &str) -> Result<(), Error> {
-    let mut len = value.len();
-    let total = out.len().saturating_add(len);
+    let total = out.len().saturating_add(value.len());
     if total >= MAX_FRAME {
         return Err(Error::Length(total.saturating_add(1)));
     }
+    put_string_unchecked(out, value);
+    Ok(())
+}
+
+pub(crate) fn put_string_unchecked(out: &mut BytesMut, value: &str) {
+    let mut len = value.len();
     while len >= 128 {
         out.put_u8((len as u8 & 0x7f) | 0x80);
         len >>= 7;
     }
     out.put_u8(len as u8);
     out.extend_from_slice(value.as_bytes());
-    Ok(())
 }

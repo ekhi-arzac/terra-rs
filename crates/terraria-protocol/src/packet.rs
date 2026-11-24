@@ -34,11 +34,27 @@ pub struct Equipment {
     pub flags: u8,
 }
 
+impl Equipment {
+    pub fn valid(&self) -> bool {
+        (0..990).contains(&self.slot) && (0..6196).contains(&self.item) && self.stack >= 0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Vitals {
     pub player: u8,
     pub current: i16,
     pub maximum: i16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Spawn {
+    pub player: u8,
+    pub point: [i16; 2],
+    pub respawn_timer: i32,
+    pub deaths: [i16; 2],
+    pub team: u8,
+    pub context: u8,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,7 +69,48 @@ pub enum Packet {
     Equipment(Equipment),
     RequestWorld,
     WorldData(Box<crate::WorldData>),
-    RequestSections { spawn: [i32;2], team: u8 },
+    RequestSections {
+        spawn: [i32; 2],
+        team: u8,
+    },
+    Status {
+        count: i32,
+        text: NetworkText,
+        flags: u8,
+    },
+    TileSection(Box<crate::section::TileSection>),
+    ChestSize {
+        index: i16,
+        capacity: i16,
+    },
+    ChestItem {
+        chest: i16,
+        slot: u8,
+        stack: i16,
+        prefix: u8,
+        item: i16,
+    },
+    Spawn(Spawn),
+    Movement(crate::Movement),
+    PlayerActive {
+        player: u8,
+        active: bool,
+    },
+    ChatCommand {
+        command: String,
+        text: String,
+    },
+    ChatMessage {
+        author: u8,
+        text: NetworkText,
+        color: [u8; 3],
+    },
+    BannerState(Box<crate::BannerState>),
+    TowerShields([u16; 4]),
+    CavernMonsters([u16; 6]),
+    SpawnAllowed,
+    RequestSection([u16; 2]),
+    FinishedConnecting,
     Life(Vitals),
     RequestPassword,
     Password(String),
@@ -82,6 +139,20 @@ impl Packet {
             Self::RequestWorld => 6,
             Self::WorldData(_) => 7,
             Self::RequestSections { .. } => 8,
+            Self::Status { .. } => 9,
+            Self::TileSection(_) => 10,
+            Self::ChestSize { .. } => 155,
+            Self::ChestItem { .. } => 32,
+            Self::Spawn(_) => 12,
+            Self::Movement(_) => 13,
+            Self::PlayerActive { .. } => 14,
+            Self::ChatCommand { .. } | Self::ChatMessage { .. } => 82,
+            Self::BannerState(_) => 82,
+            Self::TowerShields(_) => 101,
+            Self::CavernMonsters(_) => 136,
+            Self::SpawnAllowed => 49,
+            Self::RequestSection(_) => 159,
+            Self::FinishedConnecting => 129,
             Self::Life(_) => 16,
             Self::RequestPassword => 37,
             Self::Password(_) => 38,
@@ -93,7 +164,14 @@ impl Packet {
         }
     }
 
+    /// Decode a server-to-client frame. Text module 1 has direction-dependent payloads.
     pub fn decode(frame: &Frame) -> Result<Self, Error> {
+        Self::decode_direction(frame, false)
+    }
+    pub fn decode_client(frame: &Frame) -> Result<Self, Error> {
+        Self::decode_direction(frame, true)
+    }
+    fn decode_direction(frame: &Frame, from_client: bool) -> Result<Self, Error> {
         let size = frame.payload.len().saturating_add(3);
         if size > MAX_FRAME {
             return Err(Error::Length(size));
@@ -146,7 +224,61 @@ impl Packet {
             }),
             6 => Self::RequestWorld,
             7 => Self::WorldData(Box::new(crate::WorldData::read(&mut r)?)),
-            8 => Self::RequestSections {spawn:r.i32s()?,team:r.byte()?},
+            8 => Self::RequestSections {
+                spawn: r.i32s()?,
+                team: r.byte()?,
+            },
+            9 => Self::Status {
+                count: r.i32()?,
+                text: NetworkText::read(&mut r, 0)?,
+                flags: r.byte()?,
+            },
+            10 => {
+                let data = r.bytes(r.0.len())?;
+                Self::TileSection(Box::new(crate::section::TileSection::read(data)?))
+            }
+            155 => Self::ChestSize {
+                index: r.i16()?,
+                capacity: r.i16()?,
+            },
+            32 => Self::ChestItem {
+                chest: r.i16()?,
+                slot: r.byte()?,
+                stack: r.i16()?,
+                prefix: r.byte()?,
+                item: r.i16()?,
+            },
+            12 => Self::Spawn(Spawn {
+                player: r.byte()?,
+                point: r.i16s()?,
+                respawn_timer: r.i32()?,
+                deaths: r.i16s()?,
+                team: r.byte()?,
+                context: r.byte()?,
+            }),
+            13 => Self::Movement(crate::Movement::read(&mut r)?),
+            14 => Self::PlayerActive {
+                player: r.byte()?,
+                active: r.byte()? != 0,
+            },
+            82 => match (r.u16()?, from_client) {
+                (1, true) => Self::ChatCommand {
+                    command: r.string()?.to_owned(),
+                    text: r.string()?.to_owned(),
+                },
+                (1, false) => Self::ChatMessage {
+                    author: r.byte()?,
+                    text: NetworkText::read(&mut r, 0)?,
+                    color: r.take()?,
+                },
+                (11, false) => Self::BannerState(Box::new(crate::BannerState::read(&mut r)?)),
+                _ => return Err(Error::Invalid("unsupported net module")),
+            },
+            101 => Self::TowerShields(r.i16s::<4>()?.map(|v| v as u16)),
+            136 => Self::CavernMonsters(r.i16s::<6>()?.map(|v| v as u16)),
+            49 => Self::SpawnAllowed,
+            159 => Self::RequestSection([r.u16()?, r.u16()?]),
+            129 => Self::FinishedConnecting,
             id @ (16 | 42) => {
                 let v = Vitals {
                     player: r.byte()?,
@@ -229,9 +361,89 @@ impl Packet {
                 out.put_i16_le(e.item);
                 out.put_u8(e.flags);
             }
+            Self::Status { count, text, flags } => {
+                out.put_i32_le(*count);
+                text.write(&mut out, 0)?;
+                out.put_u8(*flags);
+            }
+            Self::TileSection(section) => section.write(&mut out)?,
+            Self::ChestSize { index, capacity } => {
+                out.put_i16_le(*index);
+                out.put_i16_le(*capacity);
+            }
+            Self::ChestItem {
+                chest,
+                slot,
+                stack,
+                prefix,
+                item,
+            } => {
+                out.put_i16_le(*chest);
+                out.put_u8(*slot);
+                out.put_i16_le(*stack);
+                out.put_u8(*prefix);
+                out.put_i16_le(*item);
+            }
             Self::WorldData(data) => data.write(&mut out)?,
-            Self::RequestSections {spawn,team} => { for v in spawn { out.put_i32_le(*v); } out.put_u8(*team); }
-            Self::RequestWorld | Self::RequestPassword => {}
+            Self::RequestSections { spawn, team } => {
+                for v in spawn {
+                    out.put_i32_le(*v);
+                }
+                out.put_u8(*team);
+            }
+            Self::BannerState(s) => {
+                out.put_u16_le(11);
+                s.write(&mut out);
+            }
+            Self::TowerShields(a) => {
+                for &n in a {
+                    out.put_u16_le(n);
+                }
+            }
+            Self::CavernMonsters(a) => {
+                for &n in a {
+                    out.put_u16_le(n);
+                }
+            }
+            Self::Movement(m) => m.write(&mut out)?,
+            Self::PlayerActive { player, active } => {
+                out.extend_from_slice(&[*player, u8::from(*active)])
+            }
+            Self::ChatCommand { command, text } => {
+                out.put_u16_le(1);
+                put_string(&mut out, command)?;
+                put_string(&mut out, text)?;
+            }
+            Self::ChatMessage {
+                author,
+                text,
+                color,
+            } => {
+                out.put_u16_le(1);
+                out.put_u8(*author);
+                text.write(&mut out, 0)?;
+                out.extend_from_slice(color);
+            }
+            Self::RequestSection(index) => {
+                for n in index {
+                    out.put_u16_le(*n)
+                }
+            }
+            Self::Spawn(s) => {
+                out.put_u8(s.player);
+                for v in s.point {
+                    out.put_i16_le(v)
+                }
+                out.put_i32_le(s.respawn_timer);
+                for v in s.deaths {
+                    out.put_i16_le(v)
+                }
+                out.extend_from_slice(&[s.team, s.context]);
+            }
+            Self::RequestWorld
+            | Self::RequestPassword
+            | Self::SpawnAllowed
+            | Self::FinishedConnecting => {}
             Self::Life(v) | Self::Mana(v) => {
                 out.put_u8(v.player);
                 out.put_i16_le(v.current);

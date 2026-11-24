@@ -1,6 +1,11 @@
 //! Lossless inspection of the sectioned world format written by release 326.
-mod tiles;
-pub use tiles::{Liquid, Tile};
+mod cavern;
+mod join;
+pub use join::JoinState;
+mod sections;
+use terraria_binary::tiles;
+pub use terraria_binary::tiles::{Liquid, Tile};
+use terraria_protocol::section::TileEntity;
 
 use std::{
     fs::File,
@@ -70,12 +75,16 @@ pub struct Sign {
 pub struct World {
     data: Vec<u8>,
     meta: Metadata,
+    flags: Range<usize>,
     important: Range<usize>,
     type_count: usize,
     /// Absolute file positions of the first tile in each column, plus the end.
     columns: Vec<usize>,
+    active_interior: u32,
+    has_dungeon: bool,
     chests: Vec<Chest>,
     signs: Vec<Sign>,
+    entities: Vec<TileEntity>,
 }
 
 impl World {
@@ -125,7 +134,8 @@ impl World {
         }
 
         let mut header = Reader(&data[offsets[0]..offsets[1]]);
-        let meta = metadata(&mut header, revision, favorite)?;
+        let (meta, flags_len) = metadata(&mut header, revision, favorite)?;
+        let flags = offsets[1] - flags_len..offsets[1];
         let mut footer = Reader(&data[offsets[10]..]);
         if footer.byte()? == 0 || footer.string()? != meta.name || footer.i32()? != meta.world_id {
             return Err(Error::Invalid("footer identity"));
@@ -136,11 +146,23 @@ impl World {
 
         let mut tiles = Reader(&data[offsets[1]..offsets[2]]);
         let mut columns = Vec::with_capacity(meta.width as usize + 1);
-        for _ in 0..meta.width {
+        let mut active_interior = 0;
+        let mut has_dungeon = false;
+        for x in 0..meta.width {
             columns.push(offsets[2] - tiles.0.len());
             let mut rows_left = meta.height;
             while rows_left > 0 {
-                let (_, run) = tiles::read_run(&mut tiles, &data[important.clone()], type_count)?;
+                let (tile, run) =
+                    tiles::read_run(&mut tiles, &data[important.clone()], type_count)?;
+                let y = meta.height - rows_left;
+                let end = (y + run).min(meta.height.saturating_sub(40));
+                if (40..meta.width.saturating_sub(40)).contains(&x) && end > y.max(40) {
+                    if tile.block.is_some() {
+                        active_interior += end - y.max(40);
+                    }
+                    has_dungeon |= matches!(tile.block, Some(41 | 43 | 44 | 677..=679))
+                        || matches!(tile.wall,7..=9|94..=99);
+                }
                 rows_left = rows_left
                     .checked_sub(run)
                     .ok_or(Error::Invalid("tile run crosses column boundary"))?;
@@ -152,12 +174,17 @@ impl World {
         columns.push(offsets[2]);
         let chests = read_chests(&data[offsets[2]..offsets[3]])?;
         let signs = read_signs(&data[offsets[3]..offsets[4]])?;
+        let entities = sections::entities(&data[offsets[5]..offsets[6]])?;
         Ok(Self {
             data,
+            entities,
             meta,
+            flags,
             important,
             type_count,
             columns,
+            active_interior,
+            has_dungeon,
             chests,
             signs,
         })
@@ -215,7 +242,7 @@ impl World {
     }
 }
 
-fn metadata(r: &mut Reader<'_>, revision: u32, favorite: bool) -> Result<Metadata, Error> {
+fn metadata(r: &mut Reader<'_>, revision: u32, favorite: bool) -> Result<(Metadata, usize), Error> {
     let name = r.string()?.to_owned();
     let seed = r.string()?.to_owned();
     let generator_version = u64::from_le_bytes(r.take()?);
@@ -231,6 +258,7 @@ fn metadata(r: &mut Reader<'_>, revision: u32, favorite: bool) -> Result<Metadat
     {
         return Err(Error::Invalid("world dimensions"));
     }
+    let flags_len = r.0.len();
     let game_mode = r.i32()?;
     r.take::<9>()?; // Special-seed booleans through skyblock.
     r.take::<16>()?; // Creation and save timestamps.
@@ -241,23 +269,26 @@ fn metadata(r: &mut Reader<'_>, revision: u32, favorite: bool) -> Result<Metadat
     let rock_layer = f64::from_le_bytes(r.take()?);
     let time = f64::from_le_bytes(r.take()?);
     let daytime = r.byte()? != 0;
-    Ok(Metadata {
-        name,
-        seed,
-        world_id,
-        guid_bytes,
-        generator_version,
-        revision,
-        favorite,
-        width,
-        height,
-        game_mode,
-        spawn,
-        surface,
-        rock_layer,
-        time,
-        daytime,
-    })
+    Ok((
+        Metadata {
+            name,
+            seed,
+            world_id,
+            guid_bytes,
+            generator_version,
+            revision,
+            favorite,
+            width,
+            height,
+            game_mode,
+            spawn,
+            surface,
+            rock_layer,
+            time,
+            daytime,
+        },
+        flags_len,
+    ))
 }
 
 fn read_chests(bytes: &[u8]) -> Result<Vec<Chest>, Error> {

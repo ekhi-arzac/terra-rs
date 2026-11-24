@@ -1,6 +1,6 @@
 # World file release 326
 
-`terraria-world` reads the format written by the supplied 1.4.5.8 server. Configure `world` in the Rust server TOML to validate and index a file before accepting connections. The join handler uses the loaded game mode to validate Journey characters. The standalone utility can inspect a world, look up a tile or save an exact copy.
+`terraria-world` reads the format written by the supplied 1.4.5.8 server. Configure `world` in the Rust server TOML to validate and index a file before accepting connections. World entry reads the extended header, builds packet 7 and streams indexed terrain and chest contents. The standalone utility can inspect a world, look up a tile or save an exact copy.
 
 ```sh
 cargo run -p terraria-world -- inspect existing.wld
@@ -33,6 +33,6 @@ The loader validates the complete tile section once and stores a byte offset per
 
 The chest section starts with an i16 count. Each record has i32 x/y, name string, i32 capacity and one i16 stack per slot. A nonzero stack adds an i32 item type and u8 prefix. A negative stack decodes as a single item in the version-326 reader. Empty slots occupy two bytes. Sign records follow their i16 count with string text and i32 x/y. The parser exposes serialized containers, before tile-based validation or deduplication.
 
-The immutable world image retains opaque header fields, progression and unparsed NPC, entity and auxiliary sections. Saving writes the original bytes to a unique temporary file in the destination directory, syncs it, reads it back for comparison, atomically publishes it on supported filesystems and syncs the parent on Unix. Loading checks the interpreted sections and the directory. Gameplay validation of opaque sections, tile mutation, incremental serialization and rolling backups remain open.
+The immutable image retains the original bytes of every section. The join path reads persisted progression, seed flags, biome styles, ore tiers, weather, team spawns and dungeon coordinates. The tile index pass also counts interior active tiles for the Skyblock density flag and checks the release’s dungeon block and wall types. Full tile entity records use the same eleven type layouts on disk and in section packets. As in the reference loader, the network ID is assigned from file order and the last record at a duplicated position wins. NPC, bestiary, pressure plate and other auxiliary data remain opaque. Saving writes the original bytes to a unique temporary file in the destination directory, syncs it, reads it back for comparison, atomically publishes it on supported filesystems and syncs the parent on Unix. Loading checks the interpreted sections and the directory. Gameplay validation of opaque sections, tile mutation, incremental serialization and rolling backups remain open.
 
 The Rust loader sets local ceilings of 512 MiB/file, 32767 tiles per axis and 64 million tiles/world. Those are resource bounds. The binary evidence for the format is in `IO.FileMetadata.Write`, `IO.WorldFile.SaveWorld_Version2`, `SaveWorldHeader`, `SaveWorldFlags`, `LoadWorldTiles`, `LoadChests`, `LoadSigns` and `LoadFooter`.

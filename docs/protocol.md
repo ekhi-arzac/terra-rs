@@ -20,6 +20,22 @@ Fields in each row appear in wire order. Directions describe the direct join seq
 | 4 SyncPlayer | C → S | u8 player, u8 skin, u8 voice, f32 voice pitch offset, u8 hair, string name, u8 hair dye, u16 hidden accessory mask, u8 hidden misc mask, seven RGB colors (hair, skin, eyes, shirt, undershirt, pants, shoes), u8 difficulty/accessory flags, u8 torch/cart flags, u8 permanent-upgrade flags. |
 | 5 SyncEquipment | C → S | u8 player, i16 equipment slot, i16 stack, u8 prefix, i16 item type, u8 flags (bit 0 favorited, bit 1 set from the sender's extra sync argument). |
 | 6 RequestWorldData | C → S | Empty. |
+| 7 WorldData | S → C | World header and runtime fields in the order below. |
+| 8 RequestTileData | C → S | i32 personal spawn X, i32 Y, u8 team. Use −1, −1 for the ordinary world spawn. |
+| 9 StatusTextSize | S → C | i32 section count, NetworkText status, u8 flags. |
+| 10 TileSection | S → C | One raw DEFLATE stream containing the rectangle described below. |
+| 12 PlayerSpawn | Both | u8 player, i16 spawn X and Y, i32 respawn timer, i16 PvE and PvP death counts, u8 team, u8 spawn context. |
+| 13 PlayerControls | Both | u8 player, four u8 flag masks, u8 selected item, position vector. Mask 2 bit 2 adds velocity, mask 2 bit 7 adds a u16 mount, mask 3 bit 6 adds two return-potion vectors, mask 4 bit 5 adds a camera vector. Vectors are two f32s in X, Y order. |
+| 14 PlayerActive | S → C | u8 player, bool active. |
+| 32 SyncChestItem | S → C during transfer | i16 chest index, u8 slot, i16 stack, u8 prefix, i16 item ID. Empty slots are transmitted. |
+| 49 InitialSpawn | S → C | Empty. Invites the client to send packet 12. |
+| 82 NetModules, text module | Both | u16 module ID 1. Client sends command-name string and text string. Server sends u8 author, NetworkText and RGB. The supported chat command is `Say`. |
+| 82 NetModules, banner full state | S → C | u16 module ID 11, u8 subtype 0, i16 count and i32 kills per entry, i16 count and u16 claimable banners per entry. Release 326 sends 293 entries for each array. |
+| 101 Lunar tower shields | S → C | Four u16 strengths in solar, vortex, nebula and stardust order. |
+| 136 Cavern monster variants | S → C | Six u16 NPC types, three per species group. The world ID seeds their selection. |
+| 129 FinishedConnectingToServer | S → C | Empty. |
+| 155 SyncChestSize | S → C | i16 chest index, i16 capacity. |
+| 159 RequestSection | C → S | u16 section X, u16 section Y. |
 | 16 PlayerLifeMana | C → S | u8 player, i16 current life, i16 maximum life. |
 | 37 RequestPassword | S → C | Empty. |
 | 38 SendPassword | C → S | string password. |
@@ -37,6 +53,22 @@ For packet 4, difficulty flags at bits 0, 1, 2, 3 mean mediumcore, hardcore, ext
 2. In vanilla state 0, ID 1 must match the exact greeting. A version mismatch gets key `LegacyMultiplayer.4`. An open server returns ID 3. A protected server enters state -1 and sends ID 37.
 3. A matching ID 38 password yields ID 3 and state 1. A wrong password yields `LegacyMultiplayer.1`. Rust accepts ID 38 only while awaiting the password.
 4. After ID 3 the client emits 4, 68, 16, 42, 50, 147, repeated 5s for inventory and banks, optional 161, then 6. The connection determines player identity. The Rust session bounds equipment indices to 0–989 and applies the observed appearance and life limits. The name limit uses 20 UTF-16 code units after trimming. Game mode 3 accepts Journey characters. Other modes accept non-Journey characters.
-5. At ID 6 the current Rust implementation sends a literal disconnect explaining that world synchronization is unavailable. Vanilla would send ID 7. Unknown messages and illegal phase transitions terminate the session. Rust refuses malformed frames and enforces strict field consumption.
+5. A configured world answers 6 with 7. Request 8 returns another 7, then status 9 and the sections surrounding the world spawn. A valid personal or team spawn can extend this area. The server visits section X first and then Y within each column, clips at the world edges and tracks sections sent on that connection.
+6. For each section the native server sends 10, then 155 and one 32 per slot for each chest. After the terrain, the banner full state, lunar shields and cavern monster types are sent. Packet 49 then invites the client to spawn. A named character sends 12, the roster registers the active player and the server sends 129. Request 159 can fetch additional sections during play. Unknown messages, unsupported interactions and illegal phase transitions close the session.
 
 Character and packet limits come from `GetData`, `SendData`, `Player..cctor`, `PlayerItemSlotID..cctor`, `ItemID..cctor`, `PlayerVariantID..cctor` and `WriteAccessoryVisibility`. The signed wire slot in packet 5 is distinct from the server-assigned u8 player.
+
+## WorldData field order
+
+1. i32 time, u8 day/blood moon/eclipse flags, u8 moon phase, six i16s for dimensions, spawn and layer heights, i32 world ID, string name, u8 game mode, 16 GUID bytes, u64 generator version, u8 moon type.
+2. Thirteen background bytes and three biome background bytes, f32 wind and u8 cloud count. Trees and caves each use three i32 boundaries and four style bytes. Thirteen tree-top bytes follow.
+3. f32 rain intensity, eleven progression and event flag bytes, two u8 dial cooldowns, seven i16 ore types, i8 invasion, u64 lobby ID and f32 target sandstorm severity.
+4. u8 extra spawn count, that many pairs of i16 coordinates and one i16 pair for the dungeon.
+
+The mappings between saved flags and individual packet bits are in `terraria-world/src/join.rs`. The direct-IP server uses the loaded time and weather. A running vanilla simulation subsequently advances these fields.
+
+## Tile sections
+
+The inflated stream starts with i32 X and Y in **tiles**, then i16 width and height. Normal rectangles contain 200 × 150 tiles in row order. Runs can cross rows. The tile records use the release's 754-entry frame-importance map and the chained headers, paints, wall and liquid fields documented for the world file. The high two bits of the first header select the width of the repeat count. Different valid run boundaries and DEFLATE encoders can represent identical terrain.
+
+Three lists follow the last tile. An i16 count precedes each list. A chest or sign entry contains an i16 index, two i16 coordinates and a string. A full tile entity contains a u8 kind, i32 entity ID, two i16 coordinates and type-specific data. Types 0, 2, 9 and 10 carry two extra bytes, types 1, 4, 6 and 8 carry a five-byte item, and type 7 ends after the coordinates. A display doll carries two equipment masks, pose and an extra mask, followed by the selected five-byte items. A hat rack uses one mask for four slots. The decoder checks the tile total, list lengths, inflated size and end of the compressed stream.

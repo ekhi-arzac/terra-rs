@@ -21,3 +21,4 @@ terraria-network = { path = "crates/terraria-network" }
 tempfile = "3"
 terraria-binary = { path = "crates/terraria-binary" }
 terraria-world = { path = "crates/terraria-world" }
+flate2 = "1"

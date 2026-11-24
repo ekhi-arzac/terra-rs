@@ -8,3 +8,6 @@ publish.workspace = true
 terraria-protocol.workspace = true
 terraria-network.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+terraria-world.workspace = true

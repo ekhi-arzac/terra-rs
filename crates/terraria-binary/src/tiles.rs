@@ -1,5 +1,5 @@
 use crate::Error;
-use terraria_binary::Reader;
+use crate::Reader;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Liquid {
@@ -10,7 +10,7 @@ pub enum Liquid {
 }
 
 /// A tile as stored on disk, before the engine's framing and terrain fixups.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Tile {
     pub block: Option<u16>,
     pub frame: Option<(i16, i16)>,
@@ -22,7 +22,7 @@ pub struct Tile {
     pub flags: [u8; 4],
 }
 
-pub(crate) fn read_run(
+pub fn read_run(
     r: &mut Reader<'_>,
     important: &[u8],
     type_count: usize,
@@ -52,8 +52,8 @@ pub(crate) fn read_run(
             u16::from(r.byte()?)
         };
         let i = usize::from(id);
-        if i >= type_count {
-            return Err(Error::Invalid("tile type exceeds the frame table"));
+        if i >= type_count || i / 8 >= important.len() {
+            return Err(Error::Tile("tile type exceeds the frame table"));
         }
         tile.block = Some(id);
         if important[i / 8] & (1 << (i % 8)) != 0 {
@@ -85,7 +85,7 @@ pub(crate) fn read_run(
     let repeats = match first >> 6 {
         0 => 0,
         1 => u32::from(r.byte()?),
-        _ => u32::try_from(r.i16()?).map_err(|_| Error::Invalid("negative tile repeat count"))?,
+        _ => u32::try_from(r.i16()?).map_err(|_| Error::Tile("negative tile repeat count"))?,
     };
     Ok((tile, 1 + repeats))
 }

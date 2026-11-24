@@ -1,6 +1,6 @@
 //! WorldData (7), including the fixed graphics-style fields required on the wire.
-use bytes::{BufMut, BytesMut};
 use crate::wire::{Error, Reader, put_string};
+use bytes::{BufMut, BytesMut};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorldData {
@@ -69,16 +69,50 @@ impl WorldData {
         let lobby = u64::from_le_bytes(r.take()?);
         let sandstorm = r.f32()?;
         let count = r.byte()?;
-        let extra_spawns = (0..count).map(|_|r.i16s()).collect::<Result<_,_>>()?;
+        let extra_spawns = (0..count).map(|_| r.i16s()).collect::<Result<_, _>>()?;
         let dungeon = r.i16s()?;
-        Ok(Self { time,time_flags,moon_phase,size,spawn,layers,id,name,game_mode,guid,generator_version,moon_type,backgrounds,biome_backgrounds,wind,clouds,tree_x,tree_styles,cave_x,cave_styles,tree_tops,rain,progression,sundial,moondial,ores,invasion,lobby,sandstorm,extra_spawns,dungeon })
+        Ok(Self {
+            time,
+            time_flags,
+            moon_phase,
+            size,
+            spawn,
+            layers,
+            id,
+            name,
+            game_mode,
+            guid,
+            generator_version,
+            moon_type,
+            backgrounds,
+            biome_backgrounds,
+            wind,
+            clouds,
+            tree_x,
+            tree_styles,
+            cave_x,
+            cave_styles,
+            tree_tops,
+            rain,
+            progression,
+            sundial,
+            moondial,
+            ores,
+            invasion,
+            lobby,
+            sandstorm,
+            extra_spawns,
+            dungeon,
+        })
     }
     pub(crate) fn write(&self, w: &mut BytesMut) -> Result<(), Error> {
         w.put_i32_le(self.time);
-        w.extend_from_slice(&[self.time_flags,self.moon_phase]);
-        for v in self.size.into_iter().chain(self.spawn).chain(self.layers) { w.put_i16_le(v); }
+        w.extend_from_slice(&[self.time_flags, self.moon_phase]);
+        for v in self.size.into_iter().chain(self.spawn).chain(self.layers) {
+            w.put_i16_le(v);
+        }
         w.put_i32_le(self.id);
-        put_string(w,&self.name)?;
+        put_string(w, &self.name)?;
         w.put_u8(self.game_mode);
         w.extend_from_slice(&self.guid);
         w.put_u64_le(self.generator_version);
@@ -87,21 +121,34 @@ impl WorldData {
         w.extend_from_slice(&self.biome_backgrounds);
         w.put_f32_le(self.wind);
         w.put_u8(self.clouds);
-        for v in self.tree_x { w.put_i32_le(v); }
+        for v in self.tree_x {
+            w.put_i32_le(v);
+        }
         w.extend_from_slice(&self.tree_styles);
-        for v in self.cave_x { w.put_i32_le(v); }
+        for v in self.cave_x {
+            w.put_i32_le(v);
+        }
         w.extend_from_slice(&self.cave_styles);
         w.extend_from_slice(&self.tree_tops);
         w.put_f32_le(self.rain);
         w.extend_from_slice(&self.progression);
-        w.extend_from_slice(&[self.sundial,self.moondial]);
-        for v in self.ores { w.put_i16_le(v); }
+        w.extend_from_slice(&[self.sundial, self.moondial]);
+        for v in self.ores {
+            w.put_i16_le(v);
+        }
         w.put_i8(self.invasion);
         w.put_u64_le(self.lobby);
         w.put_f32_le(self.sandstorm);
-        w.put_u8(self.extra_spawns.len().try_into().map_err(|_|Error::Invalid("extra spawn count"))?);
+        w.put_u8(
+            self.extra_spawns
+                .len()
+                .try_into()
+                .map_err(|_| Error::Invalid("extra spawn count"))?,
+        );
         for p in self.extra_spawns.iter().chain([&self.dungeon]) {
-            for v in p { w.put_i16_le(*v); }
+            for v in p {
+                w.put_i16_le(*v);
+            }
         }
         Ok(())
     }

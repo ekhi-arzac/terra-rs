@@ -60,7 +60,11 @@ fn fixture() -> Vec<u8> {
     data.extend(2i32.to_le_bytes());
     for i in 4..10 {
         section(&mut data, i);
-        data.extend([0xaa, i as u8]);
+        if i == 5 {
+            data.extend(0i32.to_le_bytes());
+        } else {
+            data.extend([0xaa, i as u8]);
+        }
     }
     section(&mut data, 10);
     data.extend(b"\x01\x03Oak");
@@ -158,4 +162,53 @@ fn corrupt_headers_sections_and_runs_are_rejected() {
         World::parse(vec![1, 0, 0, 0]),
         Err(Error::Version(1))
     ));
+}
+
+#[test]
+fn extended_disk_header_matches_recorded_world_and_exposes_row_major_tiles() {
+    let w = World::parse(include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec()).unwrap();
+    let p = terraria_protocol::Packet::WorldData(Box::new(w.world_data().unwrap()));
+    assert_eq!(
+        p.encode().unwrap().as_ref(),
+        include_bytes!("../../../docs/fixtures/entry-world-data-326.bin")
+    );
+    let s = w.section([10, 1]).unwrap();
+    let cells: Vec<_> = s
+        .runs
+        .iter()
+        .flat_map(|r| std::iter::repeat_n(r.tile, r.count as usize))
+        .collect();
+    for (dx, dy) in [(95, 82), (96, 83), (97, 82), (99, 100)] {
+        assert_eq!(
+            cells[dy * 200 + dx],
+            terraria_protocol::section::section_tile(
+                w.tile(2000 + dx as u32, 150 + dy as u32).unwrap()
+            )
+        );
+    }
+    assert_eq!(s.chests[0].position, [2095, 232]);
+    assert_eq!(w.chests()[0].items[0].stack, 1);
+    assert!(w.section([21, 0]).is_err());
+    assert!(World::parse(fixture()).unwrap().world_data().is_err());
+}
+
+#[test]
+fn progressed_header_populates_banner_counts_and_reloaded_tower_strength() {
+    let mut bytes = include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec();
+    let start = offset(&bytes, 0);
+    let end = offset(&bytes, 1);
+    let count = 293i16.to_le_bytes();
+    // Locate BannerSystem.Save's paired array lengths in this release-326 header.
+    let kills = (start..end - 1176)
+        .find(|&i| bytes[i..i + 2] == count && bytes[i + 1174..i + 1176] == count)
+        .unwrap();
+    bytes[kills + 2 + 4 * 7..kills + 2 + 4 * 8].copy_from_slice(&1234i32.to_le_bytes());
+    bytes[kills + 1176 + 2 * 7..kills + 1176 + 2 * 8].copy_from_slice(&257u16.to_le_bytes());
+    let events = kills + 1176 + 293 * 2;
+    bytes[events + 4] = 1; // Moon Lord defeated.
+    bytes[events + 14] = 1; // Solar tower active.
+    let state = World::parse(bytes).unwrap().join_state().unwrap();
+    assert_eq!(state.banners.kills[7], 1234);
+    assert_eq!(state.banners.claimable[7], 257);
+    assert_eq!(state.shields, [50, 0, 0, 0]);
 }
