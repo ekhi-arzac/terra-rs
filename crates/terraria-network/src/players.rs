@@ -1,6 +1,7 @@
 //! The roster owner serializes membership and player updates. Socket writes never run on it.
 use crate::drops::Drops;
-use crate::terrain::{LoadedWorld, SectionSnapshot};
+use crate::stations::Station;
+use crate::terrain::{LoadedWorld, SectionSnapshot, is_ground_cover};
 use crate::trees;
 use crate::{Character, Error, read_frame, write_packet};
 use bytes::{Bytes, BytesMut};
@@ -231,12 +232,60 @@ impl Roster {
         changes: &[([i16; 2], terraria_world::Tile)],
     ) -> Result<(), ProtocolError> {
         let patches = world.patches(changes)?;
-        world.commit_tiles(changes);
+        world.commit_tiles(changes, None);
         for (section, bytes) in patches {
             self.send_section_update(section, None, bytes);
         }
         Ok(())
     }
+    fn publish_footprint(
+        &mut self,
+        world: &LoadedWorld,
+        changes: &[([i16; 2], terraria_world::Tile)],
+    ) -> Result<(), ProtocolError> {
+        let (bounds, bytes) = world.footprint_patch(changes)?;
+        world.commit_tiles(changes, Some(bounds));
+        for player in self.peers.values_mut() {
+            if changes
+                .iter()
+                .any(|&(pos, _)| player.sections.contains(&LoadedWorld::section_at(pos)))
+            {
+                player.queue(bytes.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn place_station(
+        &mut self,
+        slot: u8,
+        anchor: [i16; 2],
+        station: Station,
+        style: i16,
+        alternate: u8,
+    ) -> Result<(), ProtocolError> {
+        let Some(world) = self.world.clone() else {
+            return Ok(());
+        };
+        let Some(peer) = self.peers.get_mut(&slot) else {
+            return Ok(());
+        };
+        let Some(cells) = station.footprint(&world, anchor) else {
+            return Ok(());
+        };
+        let subscribed = |pos| peer.sections.contains(&LoadedWorld::section_at(pos));
+        if alternate == 0
+            && cells.iter().all(|&(pos, _)| subscribed(pos))
+            && let Some(edits) = station.placement(&world, style, &cells)
+        {
+            self.publish_footprint(&world, &edits)?;
+        } else {
+            // Reverse local prediction over the whole footprint, even when only one cell conflicts.
+            peer.queue(world.footprint_patch(&cells)?.1);
+        }
+        Ok(())
+    }
+
     pub async fn run(mut self, mut input: mpsc::Receiver<Event>) {
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -316,8 +365,9 @@ impl Roster {
                 let Some(peer) = self.peers.get_mut(&slot) else {
                     return Ok(());
                 };
-                if let Packet::TileChange { position, .. } | Packet::RequestChest(position) =
-                    &packet
+                if let Packet::TileChange { position, .. }
+                | Packet::ObjectPlacement { position, .. }
+                | Packet::RequestChest(position) = &packet
                     && !peer.sections.contains(&LoadedWorld::section_at(*position))
                 {
                     return Ok(());
@@ -334,11 +384,23 @@ impl Roster {
                             }
                         }
                     }
+                    Packet::ObjectPlacement {
+                        position,
+                        tile,
+                        style,
+                        alternate,
+                        ..
+                    } => {
+                        if let Some(station) = u16::try_from(tile).ok().and_then(Station::for_block)
+                        {
+                            self.place_station(slot, position, station, style, alternate)?;
+                        }
+                    }
                     Packet::TileChange {
                         action,
                         position,
                         value,
-                        ..
+                        style,
                     } => {
                         let Some(world) = self.world.clone() else {
                             return Ok(());
@@ -349,6 +411,18 @@ impl Roster {
                         let Some(tile) = world.tile(position) else {
                             return Ok(());
                         };
+                        if action == 1
+                            && let Some(station) =
+                                u16::try_from(value).ok().and_then(Station::for_block)
+                        {
+                            return self.place_station(
+                                slot,
+                                position,
+                                station,
+                                i16::from(style),
+                                0,
+                            );
+                        }
                         if matches!(action, 2 | 3) {
                             let wall = match action {
                                 2 if value == 1 || tile.wall == 0 => return Ok(()),
@@ -402,6 +476,18 @@ impl Roster {
                             // Redundant cuts against air have no state to repair.
                             return Ok(());
                         }
+                        if breaking
+                            && let Some((changes, item)) = Station::removal(&world, position, tile)
+                        {
+                            if action == 20 {
+                                peer.queue(tile_break_result(position, false)?);
+                            }
+                            self.publish_footprint(&world, &changes)?;
+                            if action != 4 {
+                                self.spawn_resource(slot, position, item, 1)?;
+                            }
+                            return Ok(());
+                        }
                         if breaking && trees::is_tree(tile) {
                             let harvest = trees::harvest(&world, position, tile);
                             let changes: Vec<_> = harvest
@@ -447,15 +533,27 @@ impl Roster {
                             if action == 20 {
                                 peer.queue(tile_break_result(position, false)?);
                             }
-                            self.publish_tiles(
-                                &world,
-                                &[(position, LoadedWorld::with_block(tile, block))],
-                            )?;
-                            if block.is_none()
-                                && action != 4
-                                && let Some(item) = tile.block.and_then(resource)
-                            {
-                                self.spawn_resource(slot, position, item, 1)?;
+                            let mut edits = vec![(position, LoadedWorld::with_block(tile, block))];
+                            let station = if block.is_none() {
+                                Station::on_support(&world, position).map(
+                                    |(mut station_edits, item)| {
+                                        edits.append(&mut station_edits);
+                                        item
+                                    },
+                                )
+                            } else {
+                                None
+                            };
+                            if station.is_some() {
+                                self.publish_footprint(&world, &edits)?;
+                            } else {
+                                self.publish_tiles(&world, &edits)?;
+                            }
+                            if block.is_none() && action != 4 {
+                                for item in tile.block.and_then(resource).into_iter().chain(station)
+                                {
+                                    self.spawn_resource(slot, position, item, 1)?;
+                                }
                             }
                         } else if action == 20 {
                             peer.queue(tile_break_result(position, tile.block.is_some())?);
@@ -638,14 +736,6 @@ fn soil_under_grass(block: u16) -> Option<u16> {
     }
 }
 
-// Ordinary single-cell grass and background plants.
-fn is_ground_cover(block: u16) -> bool {
-    matches!(
-        block,
-        3 | 24 | 61 | 71 | 73 | 74 | 110 | 113 | 201 | 530 | 637
-    )
-}
-
 fn wall_item(wall: u16) -> Option<i16> {
     match wall {
         1 => Some(26),
@@ -685,14 +775,14 @@ fn resource(block: u16) -> Option<i16> {
 fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, ProtocolError> {
     if !matches!(
         frame.id,
-        5 | 13 | 16 | 17 | 21 | 31 | 32 | 33 | 36 | 39 | 42 | 50 | 82 | 147 | 151 | 154 | 159
+        5 | 13 | 16 | 17 | 21 | 31 | 32 | 33 | 36 | 39 | 42 | 50 | 79 | 82 | 147 | 151 | 154 | 159
     ) {
         return Err(ProtocolError::Unknown(frame.id));
     }
     let mut packet = Packet::decode_client(frame)?;
     match &mut packet {
         Packet::PlayerZones { player, .. } => *player = slot,
-        Packet::TileChange { .. } | Packet::RequestSection(_) => {}
+        Packet::TileChange { .. } | Packet::ObjectPlacement { .. } | Packet::RequestSection(_) => {}
         Packet::DroppedItem(i)
             if (0..=terraria_protocol::NEW_ITEM).contains(&i.slot)
                 && (0..6196).contains(&i.item)

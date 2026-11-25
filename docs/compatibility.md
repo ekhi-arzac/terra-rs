@@ -118,4 +118,10 @@ Ordinary and biome trunks, palms, ash and vanity trees support cuts. The server 
 
 A loopback test loads a section and immediately changes it, checks that the section snapshot arrives before its update, and confirms that a second player receives the current foreground block when subscribing. Both players place and break the same test wall and see the same full tile, including the foreground block. Two concurrent break requests create one wood-wall stack. A non-owner's removal attempt restores the stack on that socket, and the owner can then pick it up once. The terrain is checked again from disk after shutdown.
 
-Two headless clients also verified the wood-wall placement, break and single item drop on both the Rust listener and the installed official 1.4.6.1 dedicated server. Supported crafted walls include stone, wood, brick, glass and several biome woods. Naturally generated wall removal, crafting furniture and inventory capacity checks are pending.
+Two headless clients also verified the wood-wall placement, break and single item drop on both the Rust listener and the installed official 1.4.6.1 dedicated server. Supported crafted walls include stone, wood, brick, glass and several biome woods. Naturally generated wall removal and inventory capacity checks are pending.
+
+## Early crafting stations
+
+The server supports placement and full-object removal for work benches, furnaces, and iron and lead anvils. It validates the floor and footprint on common terrain and platforms, replaces ordinary grass cover, and returns the authoritative footprint for a rejected placement. Breaking a supported floor block removes the station, and the station produces one item even when two clients break it together.
+
+The same two-player placement and break probe passed on the Rust server and the installed official 1.4.6.1 dedicated server. It covered work benches, style 64 of the work-bench table, the furnace anchor, legacy lead-anvil placement, and a bench losing its floor. An automated Rust regression also covers an occupied footprint, a station that spans two sections, and reconnect and save/reload. Crafting recipes and character inventory still run in the stock client. The server synchronizes the station tiles and drops.

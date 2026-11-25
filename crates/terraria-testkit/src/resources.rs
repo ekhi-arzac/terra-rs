@@ -643,3 +643,207 @@ mod section_tests {
         assert_eq!((saved.block, saved.wall), (Some(1), 0));
     }
 }
+
+#[cfg(test)]
+mod station_tests {
+    use super::*;
+    use std::{collections::BTreeMap, time::Duration};
+    use terraria_world::{Tile, World};
+    use tokio::{net::TcpListener, sync::oneshot, time::timeout};
+
+    fn place(pos: [i16; 2], tile: i16, style: i16) -> Packet {
+        Packet::ObjectPlacement {
+            position: pos,
+            tile,
+            style,
+            alternate: 0,
+            random: -1,
+            facing_right: true,
+        }
+    }
+
+    fn break_at(position: [i16; 2]) -> Packet {
+        Packet::TileChange {
+            action: 0,
+            position,
+            value: 0,
+            style: 0,
+        }
+    }
+
+    async fn expect_tile(
+        socket: &mut TcpStream,
+        pos: [i16; 2],
+        block: Option<u16>,
+        frame: Option<(i16, i16)>,
+    ) -> Result<()> {
+        let patch = next(socket, 20).await?;
+        let tile = visible_tile(&[patch], pos).ok_or("tile missing from station patch")?;
+        assert_eq!((tile.block, tile.frame), (block, frame));
+        Ok(())
+    }
+
+    async fn expect_bench(socket: &mut TcpStream, present: bool) -> Result<()> {
+        let patch = next(socket, 20).await?;
+        for (x, frame_x) in [(2199, 0), (2200, 18)] {
+            let tile = visible_tile(std::slice::from_ref(&patch), [x, 233])
+                .ok_or("bench was split across patches")?;
+            assert_eq!(
+                (tile.block, tile.frame),
+                (present.then_some(18), present.then_some((frame_x, 0)))
+            );
+        }
+        Ok(())
+    }
+
+    async fn expect_drop(socket: &mut TcpStream, item: i16) -> Result<()> {
+        let drop = next(socket, 21).await?;
+        assert!(matches!(drop,Packet::DroppedItem(d) if (d.item,d.stack)==(item,1)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stations_place_and_break_atomically_and_survive_a_save() {
+        let mut fixture = BTreeMap::new();
+        for x in (2100..2118).chain(2199..2201) {
+            for y in 228..235 {
+                fixture.insert(
+                    [x, y],
+                    Tile {
+                        block: (y == 234).then_some(1),
+                        ..Tile::default()
+                    },
+                );
+            }
+        }
+        fixture.insert(
+            [2199, 233],
+            Tile {
+                block: Some(73),
+                frame: Some((0, 0)),
+                ..Tile::default()
+            },
+        );
+        let world = World::parse(include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec())
+            .unwrap()
+            .with_edits(&fixture, &BTreeMap::new())
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crafting.wld");
+        world.save(&path).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, end) = oneshot::channel();
+        let server = tokio::spawn(terraria_network::serve_with_save(
+            listener,
+            3.try_into().unwrap(),
+            String::new(),
+            Some(world),
+            Some(path.clone()),
+            async {
+                let _ = end.await;
+            },
+        ));
+        timeout(Duration::from_secs(10), async {
+            let (mut a, _, _, _) = join(addr, None).await?;
+            let (mut b, _, _, _) = join(addr, None).await?;
+
+            // A floating bench prediction is corrected across the entire empty footprint.
+            write_packet(&mut a, &place([2102, 229], 18, 0)).await?;
+            let rejection = next(&mut a, 20).await?;
+            for pos in [[2102, 229], [2103, 229]] {
+                assert_eq!(
+                    visible_tile(std::slice::from_ref(&rejection), pos)
+                        .unwrap()
+                        .block,
+                    None
+                );
+            }
+
+            // A work bench replaces grass and crosses the x=2200 section boundary.
+            write_packet(&mut a, &place([2199, 233], 18, 0)).await?;
+            for socket in [&mut a, &mut b] {
+                expect_bench(socket, true).await?;
+            }
+            write_packet(&mut b, &place([2199, 233], 18, 2)).await?;
+            expect_bench(&mut b, true).await?;
+            let break_bench = break_at([2200, 233]);
+            tokio::try_join!(
+                write_packet(&mut a, &break_bench),
+                write_packet(&mut b, &break_bench)
+            )?;
+            for socket in [&mut a, &mut b] {
+                expect_bench(socket, false).await?;
+                expect_drop(socket, 36).await?;
+                write_packet(socket, &Packet::Ping).await?;
+                loop {
+                    let f = read_frame(socket)
+                        .await?
+                        .ok_or("EOF after station harvest")?;
+                    assert_ne!(f.id, 21, "a second station drop was emitted");
+                    if f.id == 154 {
+                        break;
+                    }
+                }
+            }
+
+            // The fixed furnace has a center-bottom anchor and two rows of frames.
+            write_packet(&mut a, &place([2106, 233], 17, 0)).await?;
+            for socket in [&mut a, &mut b] {
+                let patch = next(socket, 20).await?;
+                for x in 0..3 {
+                    for y in 0..2 {
+                        let tile = visible_tile(std::slice::from_ref(&patch), [2105 + x, 232 + y])
+                            .unwrap();
+                        assert_eq!((tile.block, tile.frame), (Some(17), Some((x * 18, y * 18))));
+                    }
+                }
+            }
+            write_packet(&mut b, &break_at([2106, 234])).await?;
+            for socket in [&mut a, &mut b] {
+                let patch = next(socket, 20).await?;
+                assert_eq!(
+                    visible_tile(std::slice::from_ref(&patch), [2105, 232])
+                        .unwrap()
+                        .block,
+                    None
+                );
+                assert_eq!(visible_tile(&[patch], [2106, 234]).unwrap().block, None);
+                expect_drop(socket, 3).await?;
+                expect_drop(socket, 33).await?;
+            }
+
+            // Legacy placement selects the lead anvil style in packet 17.
+            write_packet(
+                &mut a,
+                &Packet::TileChange {
+                    action: 1,
+                    position: [2110, 233],
+                    value: 16,
+                    style: 1,
+                },
+            )
+            .await?;
+            for socket in [&mut a, &mut b] {
+                expect_tile(socket, [2111, 233], Some(16), Some((54, 0))).await?;
+            }
+            let mut log = Vec::new();
+            let (_c, _, _, _) = super::super::peers::join_capturing(addr, None, &mut log).await?;
+            assert_eq!(
+                visible_tile(&log, [2110, 233]).unwrap().frame,
+                Some((36, 0))
+            );
+            assert_eq!(visible_tile(&log, [2200, 233]).unwrap().block, None);
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        stop.send(()).unwrap();
+        server.await.unwrap().unwrap();
+        let world = World::load(path).unwrap();
+        assert_eq!(world.tile(2111, 233).unwrap().frame, Some((54, 0)));
+        assert_eq!(world.tile(2106, 233).unwrap().block, None);
+        assert_eq!(world.tile(2199, 233).unwrap().block, None);
+    }
+}

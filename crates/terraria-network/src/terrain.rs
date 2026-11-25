@@ -1,7 +1,7 @@
 use crate::{Error, write_packet};
 use bytes::{Bytes, BytesMut};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
     sync::{Arc, RwLock},
 };
@@ -31,11 +31,35 @@ pub(super) struct SectionSnapshot {
     tiles: Vec<([i16; 2], Tile)>,
     chests: Bytes,
 }
-type ChangedTiles = BTreeMap<[i16; 2], (u64, Tile)>;
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct TileBounds {
+    start: [i16; 2],
+    end: [i16; 2],
+}
+impl TileBounds {
+    fn new(pos: [i16; 2]) -> Self {
+        Self {
+            start: pos,
+            end: pos,
+        }
+    }
+
+    fn include(&mut self, pos: [i16; 2]) {
+        for axis in 0..2 {
+            self.start[axis] = self.start[axis].min(pos[axis]);
+            self.end[axis] = self.end[axis].max(pos[axis]);
+        }
+    }
+}
+struct TileEdit {
+    revision: u64,
+    tile: Tile,
+    footprint: Option<TileBounds>,
+}
 
 #[derive(Default)]
 struct WorldEdits {
-    tiles: BTreeMap<[u16; 2], ChangedTiles>,
+    tiles: BTreeMap<[u16; 2], BTreeMap<[i16; 2], TileEdit>>,
     revision: u64,
     slots: BTreeMap<(i16, u8), (u64, ChestStack)>,
 }
@@ -59,7 +83,7 @@ impl LoadedWorld {
         let blocks = edits
             .tiles
             .values()
-            .flat_map(|s| s.iter().map(|(&pos, &(_, tile))| (pos, tile)))
+            .flat_map(|s| s.iter().map(|(&pos, edit)| (pos, edit.tile)))
             .collect();
         let slots = edits.slots.iter().map(|(&key, &(_, v))| (key, v)).collect();
         drop(edits);
@@ -110,20 +134,22 @@ impl LoadedWorld {
         [x as u16 / SECTION_WIDTH, y as u16 / SECTION_HEIGHT]
     }
     pub fn tile(&self, pos: [i16; 2]) -> Option<Tile> {
-        if let Some((_, tile)) = self
-            .edits
-            .read()
-            .unwrap()
+        self.tile_at(pos, &self.edits.read().unwrap())
+    }
+
+    fn tile_at(&self, pos: [i16; 2], edits: &WorldEdits) -> Option<Tile> {
+        if let Some(edit) = edits
             .tiles
             .get(&Self::section_at(pos))
             .and_then(|s| s.get(&pos))
         {
-            return Some(*tile);
+            return Some(edit.tile);
         }
         self.source
             .tile(u32::try_from(pos[0]).ok()?, u32::try_from(pos[1]).ok()?)
             .ok()
     }
+
     pub fn with_block(mut tile: Tile, block: Option<u16>) -> Tile {
         tile.block = block;
         tile.frame = None;
@@ -133,16 +159,29 @@ impl LoadedWorld {
         tile.flags[3] &= !0x0a; // block invisibility and fullbright
         tile
     }
-    pub fn commit_tiles(&self, changes: &[([i16; 2], Tile)]) {
+    pub fn commit_tiles(&self, changes: &[([i16; 2], Tile)], bounds: Option<TileBounds>) {
         let mut edits = self.edits.write().unwrap();
         edits.revision += 1;
-        let rev = edits.revision;
+        let revision = edits.revision;
         for &(pos, tile) in changes {
-            edits
-                .tiles
-                .entry(Self::section_at(pos))
-                .or_default()
-                .insert(pos, (rev, tile));
+            let section = edits.tiles.entry(Self::section_at(pos)).or_default();
+            // Wall changes can preserve a recently placed station's block and frame.
+            let footprint = bounds.or_else(|| {
+                let old = section.get(&pos)?;
+                if old.tile.block == tile.block && old.tile.frame == tile.frame {
+                    old.footprint
+                } else {
+                    None
+                }
+            });
+            section.insert(
+                pos,
+                TileEdit {
+                    revision,
+                    tile,
+                    footprint,
+                },
+            );
         }
     }
 
@@ -162,47 +201,78 @@ impl LoadedWorld {
         changes: &[([i16; 2], Tile)],
     ) -> Result<Vec<([u16; 2], Bytes)>, ProtocolError> {
         let changed: BTreeMap<_, _> = changes.iter().copied().collect();
-        let mut rectangles = BTreeMap::<_, ([i16; 2], [i16; 2])>::new();
-        for &(pos, _) in changes {
-            let (start, end) = rectangles
+        let mut rectangles = BTreeMap::new();
+        for &pos in changed.keys() {
+            rectangles
                 .entry(Self::section_at(pos))
-                .or_insert((pos, pos));
-            for axis in 0..2 {
-                start[axis] = start[axis].min(pos[axis]);
-                end[axis] = end[axis].max(pos[axis]);
-            }
+                .or_insert_with(|| TileBounds::new(pos))
+                .include(pos);
         }
         let edits = self.edits.read().unwrap();
         rectangles
             .into_iter()
-            .map(|(index, (origin, end))| {
-                let size = [
-                    (end[0] - origin[0] + 1) as u8,
-                    (end[1] - origin[1] + 1) as u8,
-                ];
-                let mut tiles = Vec::with_capacity(usize::from(size[0]) * usize::from(size[1]));
-                let edited = edits.tiles.get(&index);
-                for x in origin[0]..=end[0] {
-                    for y in origin[1]..=end[1] {
-                        let tile = changed
-                            .get(&[x, y])
-                            .copied()
-                            .or_else(|| edited.and_then(|s| s.get(&[x, y])).map(|&(_, tile)| tile))
-                            .or_else(|| self.source.tile(x as u32, y as u32).ok())
-                            .ok_or(ProtocolError::Invalid("committed terrain coordinate"))?;
-                        tiles.push(section_tile(tile));
-                    }
-                }
-                let bytes = Packet::TilePatch(Box::new(TilePatch {
-                    origin,
-                    size,
-                    reason: 0,
-                    tiles,
-                }))
-                .encode()?;
-                Ok((index, bytes))
+            .map(|(section, bounds)| {
+                Ok((section, self.encode_rectangle(bounds, &edits, &changed)?))
             })
             .collect()
+    }
+
+    /// Multi-tile objects need one patch even when their footprint straddles two sections.
+    pub fn footprint_patch(
+        &self,
+        changes: &[([i16; 2], Tile)],
+    ) -> Result<(TileBounds, Bytes), ProtocolError> {
+        let changed: BTreeMap<_, _> = changes.iter().copied().collect();
+        let mut bounds = TileBounds::new(
+            *changed
+                .first_key_value()
+                .ok_or(ProtocolError::Invalid("empty footprint"))?
+                .0,
+        );
+        for &pos in changed.keys() {
+            bounds.include(pos);
+        }
+        Ok((
+            bounds,
+            self.encode_rectangle(bounds, &self.edits.read().unwrap(), &changed)?,
+        ))
+    }
+
+    fn encode_rectangle(
+        &self,
+        bounds: TileBounds,
+        edits: &WorldEdits,
+        changed: &BTreeMap<[i16; 2], Tile>,
+    ) -> Result<Bytes, ProtocolError> {
+        let [x, y] = bounds.start;
+        let [right, bottom] = bounds.end;
+        let size = [
+            i32::from(right) - i32::from(x) + 1,
+            i32::from(bottom) - i32::from(y) + 1,
+        ]
+        .map(u8::try_from);
+        let [Ok(width), Ok(height)] = size else {
+            return Err(ProtocolError::Invalid("terrain patch dimensions"));
+        };
+        let mut tiles = Vec::with_capacity(usize::from(width) * usize::from(height));
+        for column in x..=right {
+            for row in y..=bottom {
+                let pos = [column, row];
+                let tile = changed
+                    .get(&pos)
+                    .copied()
+                    .or_else(|| self.tile_at(pos, edits))
+                    .ok_or(ProtocolError::Invalid("terrain patch coordinate"))?;
+                tiles.push(section_tile(tile));
+            }
+        }
+        Packet::TilePatch(Box::new(TilePatch {
+            origin: bounds.start,
+            size: [width, height],
+            reason: 0,
+            tiles,
+        }))
+        .encode()
     }
 
     pub fn chest_section(&self, chest: i16) -> Option<[u16; 2]> {
@@ -230,14 +300,22 @@ impl LoadedWorld {
         if since == edits.revision {
             return Ok(());
         }
+        let mut footprints = BTreeSet::new();
         for index in sent {
             if let Some(changes) = edits.tiles.get(index) {
-                for (&pos, &(revision, tile)) in changes {
-                    if revision > since {
-                        out.extend_from_slice(&Self::tile_patch(pos, tile)?);
+                for (&pos, edit) in changes {
+                    if edit.revision > since {
+                        if let Some(bounds) = edit.footprint {
+                            footprints.insert(bounds);
+                        } else {
+                            out.extend_from_slice(&Self::tile_patch(pos, edit.tile)?);
+                        }
                     }
                 }
             }
+        }
+        for bounds in footprints {
+            out.extend_from_slice(&self.encode_rectangle(bounds, &edits, &BTreeMap::new())?);
         }
         for (&(index, slot), (rev, value)) in &edits.slots {
             let (x, y) = self.source.chests()[index as usize].position;
@@ -320,7 +398,7 @@ impl LoadedWorld {
             .get(&index)
             .into_iter()
             .flatten()
-            .map(|(&pos, &(_, tile))| (pos, tile))
+            .map(|(&pos, edit)| (pos, edit.tile))
             .collect();
         let mut chests = BytesMut::new();
         for &chest in self.chests_by_section.get(&index).into_iter().flatten() {
@@ -384,6 +462,14 @@ impl LoadedWorld {
     }
 }
 
+// Ordinary single-cell grass and background plants.
+pub(super) fn is_ground_cover(block: u16) -> bool {
+    matches!(
+        block,
+        3 | 24 | 61 | 71 | 73 | 74 | 110 | 113 | 201 | 530 | 637
+    )
+}
+
 fn initial_sections(data: &WorldData, personal: [i32; 2], team: u8) -> Vec<[u16; 2]> {
     let [width, height] = data.size.map(i32::from);
     let step_x = i32::from(SECTION_WIDTH);
@@ -417,6 +503,45 @@ fn initial_sections(data: &WorldData, personal: [i32; 2], team: u8) -> Vec<[u16;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn catch_up_keeps_a_station_in_one_patch_across_sections() {
+        let source =
+            World::parse(include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec()).unwrap();
+        let world = LoadedWorld::new(source).unwrap();
+        let left = [2199, 233];
+        let right = [2200, 233];
+        let a = Tile {
+            block: Some(18),
+            frame: Some((0, 0)),
+            ..Tile::default()
+        };
+        let b = Tile {
+            frame: Some((18, 0)),
+            ..a
+        };
+        let changes = [(left, a), (right, b)];
+        let (footprint, _) = world.footprint_patch(&changes).unwrap();
+        world.commit_tiles(&changes, Some(footprint));
+        world.commit_tiles(&[(left, Tile { wall: 4, ..a })], None);
+        let mut output = BytesMut::new();
+        world
+            .catch_up(
+                0,
+                &BTreeSet::from([LoadedWorld::section_at(left)]),
+                &mut output,
+            )
+            .unwrap();
+        let frame = terraria_protocol::Frame::split(&mut output)
+            .unwrap()
+            .unwrap();
+        let Packet::TilePatch(patch) = Packet::decode(&frame).unwrap() else {
+            panic!("expected station patch")
+        };
+        assert_eq!((patch.origin, patch.size), (left, [2, 1]));
+        assert_eq!(patch.tiles, vec![Tile { wall: 4, ..a }, b]);
+        assert!(output.is_empty());
+    }
+
     #[test]
     fn spawn_rectangles_clip_at_world_edges_and_deduplicate_personal_and_team_points() {
         let world =
