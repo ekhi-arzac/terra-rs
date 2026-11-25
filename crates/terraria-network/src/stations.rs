@@ -1,5 +1,5 @@
 //! Frame layouts for the early crafting stations handled by the roster.
-use crate::terrain::{LoadedWorld, is_ground_cover};
+use crate::terrain::{LoadedWorld, is_ground_cover, is_solid_floor};
 use terraria_world::{Liquid, Tile};
 
 #[derive(Clone, Copy)]
@@ -88,7 +88,7 @@ impl Station {
         let origin = existing.first()?.0;
         let floor = origin[1].checked_add(self.size()[1])?;
         for dx in 0..self.size()[0] {
-            if !supports_station(world.tile([origin[0].checked_add(dx)?, floor])?) {
+            if !is_solid_floor(world.tile([origin[0].checked_add(dx)?, floor])?) {
                 return None;
             }
         }
@@ -146,43 +146,4 @@ impl Station {
         }
         Self::removal(world, above, tile)
     }
-}
-
-fn supports_station(tile: Tile) -> bool {
-    // Common solid terrain, brick and platforms from the 1.4.6 tile tables.
-    tile.flags[1] & 0x70 == 0
-        && tile.flags[2] & 4 == 0
-        && matches!(
-            tile.block,
-            Some(
-                0..=2
-                | 6..=9
-                | 19
-                | 23
-                | 25
-                | 30
-                | 38..=41
-                | 43..=47
-                | 53
-                | 56
-                | 57
-                | 59
-                | 60
-                | 70
-                | 75
-                | 76
-                | 109
-                | 112
-                | 116..=119
-                | 147
-                | 161
-                | 163
-                | 164
-                | 166..=169
-                | 199
-                | 633
-                | 661
-                | 662,
-            )
-        )
 }

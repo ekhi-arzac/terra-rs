@@ -645,7 +645,7 @@ mod section_tests {
 }
 
 #[cfg(test)]
-mod station_tests {
+mod furniture_tests {
     use super::*;
     use std::{collections::BTreeMap, time::Duration};
     use terraria_world::{Tile, World};
@@ -845,5 +845,136 @@ mod station_tests {
         assert_eq!(world.tile(2111, 233).unwrap().frame, Some((54, 0)));
         assert_eq!(world.tile(2106, 233).unwrap().block, None);
         assert_eq!(world.tile(2199, 233).unwrap().block, None);
+    }
+    #[tokio::test]
+    async fn doors_share_both_columns_and_save_the_open_direction() {
+        let mut cells = BTreeMap::new();
+        for x in 2196..=2204 {
+            for y in 229..=233 {
+                cells.insert(
+                    [x, y],
+                    Tile {
+                        block: ((y == 229 || y == 233) && (x == 2199 || x == 2203)).then_some(1),
+                        wall: 4,
+                        ..Tile::default()
+                    },
+                );
+            }
+        }
+        let world = World::parse(include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec())
+            .unwrap()
+            .with_edits(&cells, &BTreeMap::new())
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doors.wld");
+        world.save(&path).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, end) = oneshot::channel();
+        let server = tokio::spawn(terraria_network::serve_with_save(
+            listener,
+            3.try_into().unwrap(),
+            String::new(),
+            Some(world),
+            Some(path.clone()),
+            async {
+                let _ = end.await;
+            },
+        ));
+        timeout(Duration::from_secs(10), async {
+            let (mut a, _, _, _) = join(addr, None).await?;
+            let (mut b, second, _, _) = join(addr, None).await?;
+            let toggle = |action, x, right| Packet::DoorToggle {
+                action,
+                position: [x, 231],
+                facing_right: right,
+            };
+            let move_b = |x| {
+                Packet::Movement(Movement {
+                    player: second,
+                    flags: [0; 4],
+                    selected: 0,
+                    position: [x, 230.0 * 16.0],
+                    velocity: None,
+                    mount: None,
+                    return_points: None,
+                    camera: None,
+                })
+            };
+            write_packet(&mut a, &place([2199, 230], 10, 2)).await?;
+            for socket in [&mut a, &mut b] {
+                expect_tile(socket, [2199, 232], Some(10), Some((0, 144))).await?;
+            }
+            write_packet(&mut a, &toggle(0, 2199, true)).await?;
+            for socket in [&mut a, &mut b] {
+                let patch = next(socket, 20).await?;
+                for row in 0..3 {
+                    for dx in 0..2 {
+                        let tile =
+                            visible_tile(std::slice::from_ref(&patch), [2199 + dx, 230 + row])
+                                .unwrap();
+                        assert_eq!(
+                            (tile.block, tile.frame, tile.wall),
+                            (Some(11), Some((dx * 18, 108 + row * 18)), 4)
+                        );
+                    }
+                }
+            }
+            let at_hinge = move_b(2199.0 * 16.0);
+            write_packet(&mut b, &at_hinge).await?;
+            observe(&mut a, &at_hinge).await?;
+            write_packet(&mut a, &toggle(1, 2200, false)).await?;
+            expect_tile(&mut a, [2200, 230], Some(11), Some((18, 108))).await?;
+            let clear = move_b(2195.0 * 16.0);
+            write_packet(&mut b, &clear).await?;
+            observe(&mut a, &clear).await?;
+            write_packet(&mut a, &toggle(1, 2200, false)).await?;
+            for socket in [&mut a, &mut b] {
+                expect_tile(socket, [2200, 230], None, None).await?;
+            }
+            write_packet(&mut b, &toggle(0, 2199, false)).await?;
+            for socket in [&mut a, &mut b] {
+                expect_tile(socket, [2198, 232], Some(11), Some((36, 144))).await?;
+            }
+            write_packet(&mut a, &place([2203, 230], 10, 0)).await?;
+            for socket in [&mut a, &mut b] {
+                expect_tile(socket, [2203, 230], Some(10), Some((0, 0))).await?;
+            }
+            let floor = break_at([2203, 233]);
+            tokio::try_join!(write_packet(&mut a, &floor), write_packet(&mut b, &floor))?;
+            for socket in [&mut a, &mut b] {
+                expect_tile(socket, [2203, 230], None, None).await?;
+                expect_drop(socket, 3).await?;
+                expect_drop(socket, 25).await?;
+                write_packet(socket, &Packet::Ping).await?;
+                loop {
+                    let frame = read_frame(socket).await?.ok_or("EOF after breaking door")?;
+                    assert_ne!(frame.id, 21, "duplicate door or floor drop");
+                    if frame.id == 154 {
+                        break;
+                    }
+                }
+            }
+            let mut log = Vec::new();
+            let (_c, _, _, _) = super::super::peers::join_capturing(addr, None, &mut log).await?;
+            assert_eq!(
+                visible_tile(&log, [2198, 231]).unwrap().frame,
+                Some((36, 126))
+            );
+            assert_eq!(
+                visible_tile(&log, [2199, 231]).unwrap().frame,
+                Some((54, 126))
+            );
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        stop.send(()).unwrap();
+        server.await.unwrap().unwrap();
+        let saved = World::load(path).unwrap();
+        assert_eq!(saved.tile(2198, 231).unwrap().frame, Some((36, 126)));
+        assert_eq!(saved.tile(2199, 231).unwrap().frame, Some((54, 126)));
+        assert_eq!(saved.tile(2203, 231).unwrap().block, None);
     }
 }

@@ -1,4 +1,5 @@
 //! The roster owner serializes membership and player updates. Socket writes never run on it.
+use crate::doors::{self, Door};
 use crate::drops::Drops;
 use crate::stations::Station;
 use crate::terrain::{LoadedWorld, SectionSnapshot, is_ground_cover};
@@ -286,6 +287,76 @@ impl Roster {
         Ok(())
     }
 
+    fn place_door(
+        &mut self,
+        slot: u8,
+        anchor: [i16; 2],
+        style: i16,
+        origin_row: u8,
+    ) -> Result<(), ProtocolError> {
+        let Some(world) = self.world.clone() else {
+            return Ok(());
+        };
+        let Some(peer) = self.peers.get_mut(&slot) else {
+            return Ok(());
+        };
+        let Some(door) = Door::placement(anchor, style, origin_row) else {
+            return Ok(());
+        };
+        let Some(cells) = door.footprint(&world) else {
+            return Ok(());
+        };
+        if cells
+            .iter()
+            .all(|&(pos, _)| peer.sections.contains(&LoadedWorld::section_at(pos)))
+            && let Some(edits) = door.place(&world, &cells)
+        {
+            self.publish_footprint(&world, &edits)?;
+        } else {
+            peer.queue(world.footprint_patch(&cells)?.1);
+        }
+        Ok(())
+    }
+
+    fn toggle_door(
+        &mut self,
+        slot: u8,
+        action: u8,
+        pos: [i16; 2],
+        right: bool,
+    ) -> Result<(), ProtocolError> {
+        if action > 1 {
+            return Ok(());
+        } // Trapdoors and tall gates have different layouts.
+        let Some(world) = self.world.clone() else {
+            return Ok(());
+        };
+        let Some(tile) = world.tile(pos) else {
+            return Ok(());
+        };
+        let Some(door) = Door::locate(&world, pos, tile) else {
+            if let Some(peer) = self.peers.get_mut(&slot) {
+                peer.queue(LoadedWorld::tile_patch(pos, tile)?);
+            }
+            return Ok(());
+        };
+        let blocked = action == 1
+            && self.peers.values().any(|player| {
+                player.character.life.is_none_or(|life| life.current > 0)
+                    && player
+                        .movement
+                        .is_some_and(|m| door.overlaps_hinge(m.position))
+            });
+        if let Some((tiles, accepted)) = door.toggle(&world, action == 0, right, blocked) {
+            if accepted {
+                self.publish_footprint(&world, &tiles)?;
+            } else if let Some(peer) = self.peers.get_mut(&slot) {
+                peer.queue(world.footprint_patch(&tiles)?.1);
+            }
+        }
+        Ok(())
+    }
+
     pub async fn run(mut self, mut input: mpsc::Receiver<Event>) {
         let mut tick = tokio::time::interval(Duration::from_millis(100));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -367,6 +438,7 @@ impl Roster {
                 };
                 if let Packet::TileChange { position, .. }
                 | Packet::ObjectPlacement { position, .. }
+                | Packet::DoorToggle { position, .. }
                 | Packet::RequestChest(position) = &packet
                     && !peer.sections.contains(&LoadedWorld::section_at(*position))
                 {
@@ -384,6 +456,13 @@ impl Roster {
                             }
                         }
                     }
+                    Packet::DoorToggle {
+                        action,
+                        position,
+                        facing_right,
+                    } => {
+                        self.toggle_door(slot, action, position, facing_right)?;
+                    }
                     Packet::ObjectPlacement {
                         position,
                         tile,
@@ -391,7 +470,10 @@ impl Roster {
                         alternate,
                         ..
                     } => {
-                        if let Some(station) = u16::try_from(tile).ok().and_then(Station::for_block)
+                        if tile == doors::CLOSED as i16 {
+                            self.place_door(slot, position, style, alternate)?;
+                        } else if let Some(station) =
+                            u16::try_from(tile).ok().and_then(Station::for_block)
                         {
                             self.place_station(slot, position, station, style, alternate)?;
                         }
@@ -477,6 +559,19 @@ impl Roster {
                             return Ok(());
                         }
                         if breaking
+                            && let Some((changes, item)) = Door::locate(&world, position, tile)
+                                .and_then(|door| door.removal(&world))
+                        {
+                            if action == 20 {
+                                peer.queue(tile_break_result(position, false)?);
+                            }
+                            self.publish_footprint(&world, &changes)?;
+                            if action != 4 {
+                                self.spawn_resource(slot, position, item, 1)?;
+                            }
+                            return Ok(());
+                        }
+                        if breaking
                             && let Some((changes, item)) = Station::removal(&world, position, tile)
                         {
                             if action == 20 {
@@ -534,23 +629,40 @@ impl Roster {
                                 peer.queue(tile_break_result(position, false)?);
                             }
                             let mut edits = vec![(position, LoadedWorld::with_block(tile, block))];
-                            let station = if block.is_none() {
-                                Station::on_support(&world, position).map(
-                                    |(mut station_edits, item)| {
-                                        edits.append(&mut station_edits);
-                                        item
-                                    },
-                                )
-                            } else {
-                                None
-                            };
-                            if station.is_some() {
-                                self.publish_footprint(&world, &edits)?;
-                            } else {
+                            let mut attached_items = Vec::new();
+                            if block.is_none() {
+                                if let Some((mut cells, item)) =
+                                    Station::on_support(&world, position)
+                                {
+                                    edits.append(&mut cells);
+                                    attached_items.push(item);
+                                }
+                                for dy in [-1, 1] {
+                                    let Some(y) = position[1].checked_add(dy) else {
+                                        continue;
+                                    };
+                                    let next = [position[0], y];
+                                    if let Some(tile) = world.tile(next)
+                                        && let Some(door) = Door::locate(&world, next, tile)
+                                        && door.supported_by(position)
+                                        && let Some((mut cells, item)) = door.removal(&world)
+                                    {
+                                        edits.append(&mut cells);
+                                        attached_items.push(item);
+                                    }
+                                }
+                            }
+                            if attached_items.is_empty() {
                                 self.publish_tiles(&world, &edits)?;
+                            } else {
+                                self.publish_footprint(&world, &edits)?;
                             }
                             if block.is_none() && action != 4 {
-                                for item in tile.block.and_then(resource).into_iter().chain(station)
+                                for item in tile
+                                    .block
+                                    .and_then(resource)
+                                    .into_iter()
+                                    .chain(attached_items)
                                 {
                                     self.spawn_resource(slot, position, item, 1)?;
                                 }
@@ -775,14 +887,34 @@ fn resource(block: u16) -> Option<i16> {
 fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, ProtocolError> {
     if !matches!(
         frame.id,
-        5 | 13 | 16 | 17 | 21 | 31 | 32 | 33 | 36 | 39 | 42 | 50 | 79 | 82 | 147 | 151 | 154 | 159
+        5 | 13
+            | 16
+            | 17
+            | 19
+            | 21
+            | 31
+            | 32
+            | 33
+            | 36
+            | 39
+            | 42
+            | 50
+            | 79
+            | 82
+            | 147
+            | 151
+            | 154
+            | 159
     ) {
         return Err(ProtocolError::Unknown(frame.id));
     }
     let mut packet = Packet::decode_client(frame)?;
     match &mut packet {
         Packet::PlayerZones { player, .. } => *player = slot,
-        Packet::TileChange { .. } | Packet::ObjectPlacement { .. } | Packet::RequestSection(_) => {}
+        Packet::TileChange { .. }
+        | Packet::ObjectPlacement { .. }
+        | Packet::DoorToggle { .. }
+        | Packet::RequestSection(_) => {}
         Packet::DroppedItem(i)
             if (0..=terraria_protocol::NEW_ITEM).contains(&i.slot)
                 && (0..6196).contains(&i.item)

@@ -463,6 +463,45 @@ impl LoadedWorld {
 }
 
 // Ordinary single-cell grass and background plants.
+pub(super) fn is_solid_floor(tile: Tile) -> bool {
+    // Common solid terrain, brick and platforms from the 1.4.6 tile tables.
+    tile.flags[1] & 0x70 == 0
+        && tile.flags[2] & 4 == 0
+        && matches!(
+            tile.block,
+            Some(
+                0..=2
+                | 6..=9
+                | 19
+                | 23
+                | 25
+                | 30
+                | 38..=41
+                | 43..=47
+                | 53
+                | 56
+                | 57
+                | 59
+                | 60
+                | 70
+                | 75
+                | 76
+                | 109
+                | 112
+                | 116..=119
+                | 147
+                | 161
+                | 163
+                | 164
+                | 166..=169
+                | 199
+                | 633
+                | 661
+                | 662,
+            )
+        )
+}
+
 pub(super) fn is_ground_cover(block: u16) -> bool {
     matches!(
         block,

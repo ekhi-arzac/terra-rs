@@ -91,6 +91,11 @@ pub enum Packet {
         item: i16,
     },
     TilePatch(Box<crate::TilePatch>),
+    DoorToggle {
+        action: u8,
+        position: [i16; 2],
+        facing_right: bool,
+    },
     ObjectPlacement {
         position: [i16; 2],
         tile: i16,
@@ -183,6 +188,7 @@ impl Packet {
             Self::TileSection(_) => 10,
             Self::TileChange { .. } => 17,
             Self::TilePatch(_) => 20,
+            Self::DoorToggle { .. } => 19,
             Self::ObjectPlacement { .. } => 79,
             Self::DroppedItem(_) => 21,
             Self::ItemOwner(_) => 22,
@@ -297,6 +303,11 @@ impl Packet {
                 style: r.i16()?,
                 alternate: r.byte()?,
                 random: r.byte()? as i8,
+                facing_right: r.byte()? != 0,
+            },
+            19 => Self::DoorToggle {
+                action: r.byte()?,
+                position: r.i16s()?,
                 facing_right: r.byte()? != 0,
             },
             20 if !from_client => Self::TilePatch(Box::new(crate::TilePatch::read(&mut r)?)),
@@ -474,6 +485,17 @@ impl Packet {
             }
             Self::TileSection(section) => section.write(&mut out)?,
             Self::TilePatch(patch) => patch.write(&mut out)?,
+            Self::DoorToggle {
+                action,
+                position,
+                facing_right,
+            } => {
+                out.put_u8(*action);
+                for coord in position {
+                    out.put_i16_le(*coord);
+                }
+                out.put_u8((*facing_right).into());
+            }
             Self::ObjectPlacement {
                 position,
                 tile,

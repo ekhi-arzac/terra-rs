@@ -1,4 +1,5 @@
 //! Bounded TCP transport and connection state for direct-IP clients.
+mod doors;
 mod drops;
 mod players;
 use players::{Event, Roster};

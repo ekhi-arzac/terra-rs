@@ -72,6 +72,11 @@ fn entry_and_player_wire_layouts_roundtrip_and_reject_bad_lengths() {
             position: [18, 20],
             name: Some("Café".into()),
         },
+        Packet::DoorToggle {
+            action: 0,
+            position: [2220, 220],
+            facing_right: false,
+        },
         Packet::ObjectPlacement {
             position: [2102, 233],
             tile: 18,
