@@ -169,6 +169,14 @@ pub enum Packet {
         zones: [u8; 5],
         town_npcs: u8,
     },
+    PlayerTeam {
+        player: u8,
+        team: u8,
+    },
+    PlayerPvp {
+        player: u8,
+        hostile: bool,
+    },
     PlayerActive {
         player: u8,
         active: bool,
@@ -245,6 +253,8 @@ impl Packet {
             Self::Movement(_) => 13,
             Self::PlayerZones { .. } => 36,
             Self::PlayerActive { .. } => 14,
+            Self::PlayerTeam { .. } => 45,
+            Self::PlayerPvp { .. } => 30,
             Self::ChatCommand { .. } | Self::ChatMessage { .. } => 82,
             Self::BannerState(_) => 82,
             Self::TowerShields(_) => 101,
@@ -475,6 +485,18 @@ impl Packet {
                 town_npcs: r.byte()?,
             },
             13 => Self::Movement(crate::Movement::read(&mut r)?),
+            30 => Self::PlayerPvp {
+                player: r.byte()?,
+                hostile: r.byte()? != 0,
+            },
+            45 => {
+                let player = r.byte()?;
+                let team = r.byte()?;
+                if team > 5 {
+                    return Err(Error::Invalid("player team"));
+                }
+                Self::PlayerTeam { player, team }
+            }
             14 => Self::PlayerActive {
                 player: r.byte()?,
                 active: r.byte()? != 0,
@@ -781,6 +803,17 @@ impl Packet {
             }
             Self::Ping => {}
             Self::Movement(m) => m.write(&mut out)?,
+            Self::PlayerTeam { player, team } => {
+                if *team > 5 {
+                    return Err(Error::Invalid("player team"));
+                }
+                out.put_u8(*player);
+                out.put_u8(*team);
+            }
+            Self::PlayerPvp { player, hostile } => {
+                out.put_u8(*player);
+                out.put_u8(u8::from(*hostile));
+            }
             Self::PlayerActive { player, active } => {
                 out.extend_from_slice(&[*player, u8::from(*active)])
             }

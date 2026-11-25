@@ -1,4 +1,5 @@
 //! The roster owner serializes membership and player updates. Socket writes never run on it.
+mod teams;
 use crate::doors::{self, Door};
 use crate::drops::Drops;
 use crate::stations::Station;
@@ -40,6 +41,8 @@ struct Player {
     sections: BTreeSet<[u16; 2]>,
     chest: Option<i16>,
     movement: Option<Movement>,
+    hostile: bool,
+    team: u8,
     zones: Option<([u8; 5], u8)>,
     out: Option<mpsc::Sender<Outbound>>,
 }
@@ -66,6 +69,14 @@ impl Player {
         add(Packet::PlayerActive {
             player: slot,
             active: true,
+        })?;
+        add(Packet::PlayerTeam {
+            player: slot,
+            team: self.team,
+        })?;
+        add(Packet::PlayerPvp {
+            player: slot,
+            hostile: self.hostile,
         })?;
         if let Some(chest) = self.chest {
             add(Packet::PlayerChest {
@@ -527,6 +538,8 @@ impl Roster {
                 out,
             } => {
                 let mut player = Player {
+                    team: character.spawn.map_or(0, |spawn| spawn.team),
+                    hostile: false,
                     character,
                     sections: sent,
                     chest: None,
@@ -607,6 +620,11 @@ impl Roster {
                     return Ok(());
                 }
                 match packet {
+                    Packet::PlayerTeam { team, .. } => self.change_team(slot, team)?,
+                    Packet::PlayerPvp { hostile, .. } => self.change_pvp(slot, hostile)?,
+                    Packet::ChatCommand { command, text } if command == "Party" => {
+                        self.party_chat(slot, text)?;
+                    }
                     Packet::UseTimeDial { dusk, .. } => {
                         if let Some(update) =
                             self.world.as_ref().and_then(|w| w.activate_dial(dusk))
@@ -1122,6 +1140,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 17
             | 19
             | 21
+            | 30
             | 31
             | 32
             | 33
@@ -1129,6 +1148,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 36
             | 39
             | 42
+            | 45
             | 50
             | 51
             | 56
@@ -1144,7 +1164,10 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
     }
     let mut packet = Packet::decode_client(frame)?;
     match &mut packet {
-        Packet::PlayerZones { player, .. } | Packet::UseTimeDial { player, .. } => *player = slot,
+        Packet::PlayerZones { player, .. }
+        | Packet::UseTimeDial { player, .. }
+        | Packet::PlayerPvp { player, .. }
+        | Packet::PlayerTeam { player, .. } => *player = slot,
         Packet::TileChange { .. }
         | Packet::ObjectPlacement { .. }
         | Packet::DoorToggle { .. }
@@ -1182,7 +1205,8 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
         Packet::Buffs { player, .. } => *player = slot,
         Packet::Equipment(e) if e.valid() => e.player = slot,
         Packet::Loadout { player, index, .. } if *index < 3 => *player = slot,
-        Packet::ChatCommand { command, text } if command == "Say" && text.len() <= 65520 => {}
+        Packet::ChatCommand { command, text }
+            if matches!(command.as_str(), "Say" | "Party") && text.len() <= 65520 => {}
         _ => return Err(ProtocolError::Invalid("active player update")),
     }
     Ok(packet)

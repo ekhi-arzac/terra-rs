@@ -3,6 +3,7 @@ mod clock;
 mod entry;
 mod peers;
 mod resources;
+mod teams;
 use std::{env, error::Error, fs, io, net::SocketAddr, path::Path, time::Duration};
 use terraria_network::{read_frame, write_packet};
 use terraria_protocol::{Appearance, Equipment, GREETING, NetworkText, Packet, Vitals};
@@ -337,6 +338,18 @@ fn compare(reference: &[Packet], candidate: &[Packet]) -> Result<()> {
 async fn main() -> Result<()> {
     let args: Vec<_> = env::args().skip(1).collect();
     if let [cmd, addr] = args.as_slice()
+        && cmd == "teams"
+    {
+        return timeout(
+            Duration::from_secs(30),
+            teams::run(
+                addr.parse()?,
+                env::var("TERRARIA_PROBE_PASSWORD").ok().as_deref(),
+            ),
+        )
+        .await?;
+    }
+    if let [cmd, addr] = args.as_slice()
         && cmd == "clock"
     {
         timeout(
@@ -380,7 +393,7 @@ async fn main() -> Result<()> {
         [cmd,addr,case] if cmd == "probe" => (addr,None,Scenario::parse(case)?,None),
         [cmd,a,b,case] if cmd == "compare" => (a,Some(b),Scenario::parse(case)?,None),
         [cmd,addr,path] if cmd == "capture-world" => (addr,None,Scenario::Join,Some(Path::new(path))),
-        _ => return Err("usage: terraria-testkit clock ADDR | resources ADDR CHEST_X CHEST_Y | peers ADDR [ADDR] | probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
+        _ => return Err("usage: terraria-testkit clock ADDR | teams ADDR | resources ADDR CHEST_X CHEST_Y | peers ADDR [ADDR] | probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
     };
     let password = env::var("TERRARIA_PROBE_PASSWORD").ok();
     let run = |address: SocketAddr| {

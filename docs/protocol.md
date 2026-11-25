@@ -110,3 +110,10 @@ Section delivery includes the supported local residents. The full initial reside
 Packet 7 carries the current integer phase time, a flag byte with day, blood moon and eclipse in bits 0–2, and the moon phase byte. Progression byte 2 bit 1 indicates fast-forward to dawn and byte 8 bit 7 indicates fast-forward to dusk (zero-based indices). The two dial cooldown bytes follow the progression flags. Each initial world-data response includes current time. Dial activation and phase transitions broadcast packet 7.
 
 Packet 51 carries a player byte and an action byte. Actions 3 and 6 request the enchanted sundial and moondial. The connection identifies the player. A ready dial starts fast-forward and sets its cooldown to 8. Another request during cooldown produces no update. The matching phase boundary ends fast-forward and reduces the cooldown to 7.
+
+
+## Teams and PvP
+
+Packet 30 carries a player byte and a PvP-enabled boolean. Packet 45 carries a player byte and a team in 0–5 (none, red, green, blue, yellow, pink). Both clients and servers use these layouts. An active connection supplies its own player identity. Peers receive the changed setting and a joining client receives both settings for each current player. PvP toggle announcements reach everyone. Team-change announcements reach the sender and members of the old and new nonzero teams.
+
+The text module's `Party` command delivers literal text in the sender’s team color to current teammates, including the sender. A player without a team receives the localized `LegacyMultiplayer.10` response. On a team, an empty message produces no delivery.

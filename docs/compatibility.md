@@ -160,3 +160,8 @@ cargo run -p terraria-testkit -- clock 127.0.0.1:1240
 ```
 
 Rust tests also cover the idle clock, save/reload, fractional time, frozen time, saved time speeds and fast-forward precedence. Sleep acceleration, live Journey power changes, random moon events, weather and special-seed side effects remain pending.
+
+
+## Teams, PvP settings and party chat
+
+The three-player `terraria-testkit teams ADDR` scenario passed against the installed 1.4.6.1 server and Rust. It checked a no-team chat error, a red team member joining and switching to blue, a PvP toggle, and a third player joining after the toggle. Both teammates received the red chat and the former teammate saw the switch announcement. The third player received the subsequent public chat without receiving the private text or either team announcement. A separate official-server run recorded the localized announcement and RGB color of each team.

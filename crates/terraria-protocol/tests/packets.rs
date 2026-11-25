@@ -56,6 +56,15 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
             vec![0, 0],
         ),
         (Packet::Appearance(a), 4, appearance),
+        (Packet::PlayerTeam { player: 4, team: 5 }, 45, vec![4, 5]),
+        (
+            Packet::PlayerPvp {
+                player: 13,
+                hostile: true,
+            },
+            30,
+            vec![13, 1],
+        ),
         (
             Packet::UseTimeDial {
                 player: 2,
@@ -144,6 +153,7 @@ fn layouts_round_trip_and_reject_truncation_and_trailing_bytes() {
         Packet::decode_client(&frame(51, &[2, 1])),
         Err(Error::Unknown(51))
     );
+    assert!(Packet::decode_client(&frame(45, &[3, 6])).is_err());
     for (packet, id, payload) in examples() {
         let mut bytes = BytesMut::from(packet.encode().unwrap().as_ref());
         assert_eq!(bytes[..2], ((payload.len() + 3) as u16).to_le_bytes());
