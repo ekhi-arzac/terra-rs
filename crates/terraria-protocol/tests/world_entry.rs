@@ -136,6 +136,21 @@ fn entry_and_player_wire_layouts_roundtrip_and_reject_bad_lengths() {
             zones: [8, 0, 0, 0, 4],
             town_npcs: 2,
         },
+        Packet::NpcName {
+            slot: 1,
+            name: "Tanner".into(),
+            variation: 0,
+        },
+        Packet::RequestNpcName(1),
+        Packet::NpcHome {
+            slot: 1,
+            position: [2095, 232],
+            state: 1,
+        },
+        Packet::NpcBuffs {
+            slot: 1,
+            buffs: vec![(32, 600), (4, 17)],
+        },
         Packet::Ping,
         Packet::SpawnAllowed,
         Packet::Spawn(Spawn {
@@ -167,7 +182,7 @@ fn entry_and_player_wire_layouts_roundtrip_and_reject_bad_lengths() {
     for p in packets {
         let raw = p.encode().unwrap();
         let f = frame(p.id(), &raw[3..]);
-        let decode = if matches!(p, Packet::ChatCommand { .. }) {
+        let decode = if matches!(p, Packet::ChatCommand { .. } | Packet::RequestNpcName(_)) {
             Packet::decode_client
         } else {
             Packet::decode
@@ -284,4 +299,46 @@ fn chained_flags_extended_ids_liquids_and_tile_entities() {
     overrun[8] = 0;
     assert!(Packet::decode(&raw_section(&overrun)).is_err());
     assert!(Packet::decode(&raw_section(&vec![0; 2 * 1024 * 1024 + 1])).is_err());
+}
+
+#[test]
+fn resident_capture_and_optional_npc_fields() {
+    use terraria_protocol::NpcLife;
+    // Guide, first cold join to the 1.4.6.1 server using entry-326.wld.
+    let capture = [
+        1, 0, 0x5a, 0x1b, 3, 0x47, 0, 0x80, 0x65, 0x45, 0, 0, 0, 0, 0, 0, 0, 0, 255, 0, 130, 0, 22,
+        0,
+    ];
+    let Packet::NpcSync(mut npc) = Packet::decode(&frame(23, &capture)).unwrap() else {
+        unreachable!()
+    };
+    assert_eq!(
+        (npc.slot, npc.kind, npc.target, npc.life),
+        (1, 22, 255, NpcLife::Full)
+    );
+    assert_eq!(Packet::NpcSync(npc).encode().unwrap()[3..], capture);
+    npc.ai = [Some(2.), Some(3.), None, Some(5.)];
+    npc.scaled_players = Some(3);
+    npc.difficulty = Some(2.);
+    npc.spawning = true;
+    npc.shimmer = true;
+    npc.kind = 46;
+    npc.release_owner = Some(17);
+    for life in [
+        NpcLife::Full,
+        NpcLife::Byte(10),
+        NpcLife::Short(240),
+        NpcLife::Int(40000),
+    ] {
+        npc.life = life;
+        let packet = Packet::NpcSync(npc);
+        let data = packet.encode().unwrap();
+        assert_eq!(Packet::decode(&frame(23, &data[3..])).unwrap(), packet);
+        for end in 3..data.len() {
+            assert!(Packet::decode(&frame(23, &data[3..end])).is_err());
+        }
+        let mut extra = data[3..].to_vec();
+        extra.push(0);
+        assert!(Packet::decode(&frame(23, &extra)).is_err());
+    }
 }

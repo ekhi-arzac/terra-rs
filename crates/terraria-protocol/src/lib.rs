@@ -5,6 +5,8 @@ mod items;
 pub use items::{DroppedItem, ItemOwner, NEW_ITEM};
 mod movement;
 pub use movement::Movement;
+mod npc;
+pub use npc::{NpcLife, NpcSync};
 mod packet;
 mod server_info;
 mod text;

@@ -6,6 +6,7 @@ mod drops;
 mod players;
 use players::{Event, Roster};
 use tokio::sync::mpsc;
+mod residents;
 mod session;
 mod stations;
 mod terrain;

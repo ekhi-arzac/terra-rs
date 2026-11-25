@@ -68,3 +68,20 @@ pub(crate) fn read(bytes: &[u8]) -> Result<(Vec<i32>, Vec<Npc>), Error> {
     }
     Ok((shimmered, npcs))
 }
+
+impl crate::World {
+    /// TownRoomManager keeps one type flag for every serialized (type, x, y) record.
+    pub fn assigned_town_rooms(&self) -> Result<std::collections::BTreeSet<i32>, Error> {
+        let mut r = Reader(&self.data[self.offsets[7]..self.offsets[8]]);
+        let count = usize::try_from(r.i32()?).map_err(|_| Error::Invalid("town room count"))?;
+        if !r.0.len().is_multiple_of(12) || count != r.0.len() / 12 {
+            return Err(Error::Invalid("town room records"));
+        }
+        let mut types = std::collections::BTreeSet::new();
+        for _ in 0..count {
+            let [kind, _, _] = r.i32s()?;
+            types.insert(kind);
+        }
+        Ok(types)
+    }
+}

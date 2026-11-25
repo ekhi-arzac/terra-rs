@@ -133,3 +133,13 @@ Two headless players on disposable worlds exercised packet 79 placement at each 
 ## Online saves and administration
 
 Two loopback tests place a tile, wait for a manual or timed save while the client stays connected, join a second player and confirm that an edit made after the save reaches the first player. They exit through the console command channel and reload both the world and its previous backup. A separate persistence test performs six consecutive publications and verifies the three previous revision numbers on disk. These checks cover the Rust operator interface and world files.
+
+## Saved town residents
+
+Start both servers on separate copies of the same saved town, then run the following comparison as the first join on each server. The compact entry fixture also works.
+
+```sh
+cargo run -p terraria-testkit -- compare 127.0.0.1:1242 127.0.0.1:1240 town
+```
+
+The installed 1.4.6.1 server and Rust matched all 116 observations from an official save containing 29 residents. Each slot matched on its initial NPC state, buffs, name and variation, and housing. The probe groups duplicate section and spawn announcements by slot. A loopback regression checks the saved Guide and Old Man on two successive joins. An additional fixture with an invalid house assigned in open terrain exposed a difference. The official server marked the occupant homeless while Rust reported the saved room assignment. Live room validation, relocation, town AI, spawning and combat remain pending.

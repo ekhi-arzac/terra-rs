@@ -14,6 +14,7 @@ enum Scenario {
     Join,
     Enter,
     EnterPersonal,
+    Town,
     WrongVersion,
     WrongPassword,
     Upload,
@@ -23,6 +24,7 @@ enum Scenario {
 impl Scenario {
     fn parse(s: &str) -> Result<Self> {
         match s {
+            "town" => Ok(Self::Town),
             "enter" => Ok(Self::Enter),
             "enter-personal" => Ok(Self::EnterPersonal),
             "join" => Ok(Self::Join),
@@ -30,7 +32,7 @@ impl Scenario {
             "wrong-password" => Ok(Self::WrongPassword),
             "upload" => Ok(Self::Upload),
             "journey-on-classic" => Ok(Self::JourneyOnClassic),
-            _ => Err("scenario must be enter, enter-personal, join, wrong-version, wrong-password, upload or journey-on-classic".into()),
+            _ => Err("scenario must be town, enter, enter-personal, join, wrong-version, wrong-password, upload or journey-on-classic".into()),
         }
     }
 }
@@ -168,13 +170,26 @@ async fn probe(
         if let Some(path) = capture {
             upload(&mut stream, player).await?;
             capture_world(&mut stream, path).await?;
-        } else if matches!(scenario, Scenario::Enter | Scenario::EnterPersonal) {
-            let spawn = if scenario == Scenario::Enter {
+        } else if matches!(
+            scenario,
+            Scenario::Enter | Scenario::EnterPersonal | Scenario::Town
+        ) {
+            let spawn = if scenario != Scenario::EnterPersonal {
                 [-1, -1]
             } else {
                 [410, 465]
             };
-            entry::run(&mut stream, player, &mut log, spawn).await?;
+            entry::run(
+                &mut stream,
+                player,
+                &mut log,
+                spawn,
+                scenario == Scenario::Town,
+            )
+            .await?;
+            if scenario == Scenario::Town {
+                return town_snapshot(&mut stream, log).await;
+            }
         } else if matches!(scenario, Scenario::Upload | Scenario::JourneyOnClassic) {
             let mut a = appearance(player);
             if scenario == Scenario::Upload {
@@ -191,12 +206,63 @@ async fn probe(
     Ok(log)
 }
 
+async fn town_snapshot(stream: &mut TcpStream, log: Vec<Packet>) -> Result<Vec<Packet>> {
+    // Section entry and the full spawn list can announce the same NPC twice.
+    // The housing list identifies permanent residents independently of wildlife.
+    let mut records = std::collections::BTreeMap::new();
+    let mut houses = std::collections::BTreeSet::new();
+    for packet in log {
+        let slot = match &packet {
+            Packet::NpcSync(npc) => i16::from(npc.slot),
+            Packet::NpcBuffs { slot, .. } => *slot,
+            Packet::NpcHome { slot, .. } => {
+                houses.insert(*slot);
+                *slot
+            }
+            _ => continue,
+        };
+        records.insert((slot, packet.id()), packet);
+    }
+    if houses.is_empty() {
+        return Err("comparison requires a populated town".into());
+    }
+    records.retain(|(slot, _), _| houses.contains(slot));
+    for slot in houses {
+        if !records.contains_key(&(slot, 23)) || !records.contains_key(&(slot, 54)) {
+            return Err(format!("missing NPC state or buffs for resident {slot}").into());
+        }
+        write_packet(stream, &Packet::RequestNpcName(slot)).await?;
+        loop {
+            let frame = read_frame(stream)
+                .await?
+                .ok_or("EOF waiting for resident name")?;
+            if frame.id == 2 {
+                return Err("disconnected waiting for resident name".into());
+            }
+            if frame.id == 56 {
+                let packet = Packet::decode(&frame)?;
+                if !matches!(&packet, Packet::NpcName{slot:n,..} if *n==slot) {
+                    return Err("resident name slot mismatch".into());
+                }
+                records.insert((slot, 56), packet);
+                break;
+            }
+        }
+    }
+    println!(
+        "Received state, buffs, housing and name for {} residents.",
+        records.len() / 4
+    );
+    Ok(records.into_values().collect())
+}
+
 fn validate(scenario: Scenario, responses: &[Packet]) -> Result<()> {
     let authenticated = responses
         .strip_prefix(&[Packet::RequestPassword])
         .unwrap_or(responses);
     let expected_kick = |key| Packet::Kick(NetworkText::key(key));
     let valid = match scenario {
+        Scenario::Town => !responses.is_empty() && responses.len().is_multiple_of(4),
         Scenario::Enter | Scenario::EnterPersonal => matches!(
             authenticated,
             [
@@ -347,5 +413,57 @@ mod tests {
         );
         assert!(validate(Scenario::Join, &reference).is_ok());
         assert!(validate(Scenario::Upload, &reference).is_err());
+    }
+}
+
+#[cfg(test)]
+mod town_tests {
+    use super::*;
+    use tokio::{net::TcpListener, sync::oneshot};
+
+    #[tokio::test]
+    async fn saved_guide_and_old_man_are_available_on_each_join() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, end) = oneshot::channel();
+        let world = terraria_world::World::parse(
+            include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec(),
+        )
+        .unwrap();
+        let server = tokio::spawn(terraria_network::serve(
+            listener,
+            2.try_into().unwrap(),
+            String::new(),
+            Some(world),
+            async {
+                let _ = end.await;
+            },
+        ));
+        let run = || {
+            timeout(
+                Duration::from_secs(5),
+                probe(addr, Scenario::Town, None, None),
+            )
+        };
+        let first = run().await.unwrap().unwrap();
+        assert!(
+            first
+                .iter()
+                .any(|p| matches!(p,Packet::NpcSync(n) if n.slot==0 && n.kind==37))
+        );
+        assert!(first.contains(&Packet::NpcName {
+            slot: 1,
+            name: "Tanner".into(),
+            variation: 0
+        }));
+        assert!(first.contains(&Packet::NpcHome {
+            slot: 1,
+            position: [2095, 232],
+            state: 1
+        }));
+        assert_eq!(first.len(), 8);
+        assert_eq!(first, run().await.unwrap().unwrap());
+        stop.send(()).unwrap();
+        server.await.unwrap().unwrap();
     }
 }

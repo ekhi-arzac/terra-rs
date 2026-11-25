@@ -396,6 +396,11 @@ impl Roster {
                     world.catch_up(revision, &player.sections, &mut roster)?;
                 }
                 self.drops.snapshot(&mut roster)?;
+                if let Some(world) = &self.world {
+                    for resident in &world.residents {
+                        roster.extend_from_slice(&resident.home.encode()?);
+                    }
+                }
                 roster.extend_from_slice(&Packet::FinishedConnecting.encode()?);
                 player.queue(roster.freeze());
                 if player.out.is_some() {
@@ -463,6 +468,16 @@ impl Roster {
                             if peer.out.is_some() {
                                 peer.sections.insert(index);
                             }
+                        }
+                    }
+                    Packet::RequestNpcName(index) => {
+                        if let Some(resident) = self.world.as_ref().and_then(|world| {
+                            world
+                                .residents
+                                .iter()
+                                .find(|r| i16::from(r.sync.slot) == index)
+                        }) {
+                            peer.queue(resident.name.encode()?);
                         }
                     }
                     Packet::DoorToggle {
@@ -908,6 +923,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 39
             | 42
             | 50
+            | 56
             | 79
             | 82
             | 147
@@ -930,7 +946,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
                 && i.stack >= 0 => {}
         Packet::ReleaseItem { slot: index, .. } | Packet::RemoveItem(index)
             if (0..terraria_protocol::NEW_ITEM).contains(index) => {}
-        Packet::RequestChest(_) | Packet::ChestState { .. } => {}
+        Packet::RequestNpcName(_) | Packet::RequestChest(_) | Packet::ChestState { .. } => {}
         Packet::ChestItem {
             stack,
             item,

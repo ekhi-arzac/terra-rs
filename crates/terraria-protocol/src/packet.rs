@@ -117,6 +117,22 @@ pub enum Packet {
         force: bool,
     },
     RemoveItem(i16),
+    NpcSync(crate::NpcSync),
+    NpcBuffs {
+        slot: i16,
+        buffs: Vec<(u16, u16)>,
+    },
+    RequestNpcName(i16),
+    NpcName {
+        slot: i16,
+        name: String,
+        variation: i32,
+    },
+    NpcHome {
+        slot: i16,
+        position: [i16; 2],
+        state: u8,
+    },
     RequestChest([i16; 2]),
     ChestState {
         chest: i16,
@@ -194,6 +210,10 @@ impl Packet {
             Self::ItemOwner(_) => 22,
             Self::ReleaseItem { .. } => 39,
             Self::RemoveItem(_) => 151,
+            Self::NpcSync(_) => 23,
+            Self::NpcBuffs { .. } => 54,
+            Self::RequestNpcName(_) | Self::NpcName { .. } => 56,
+            Self::NpcHome { .. } => 60,
             Self::RequestChest(_) => 31,
             Self::ChestState { .. } => 33,
             Self::PlayerChest { .. } => 80,
@@ -340,6 +360,33 @@ impl Packet {
                     name,
                 }
             }
+            23 if !from_client => Self::NpcSync(crate::NpcSync::read(&mut r)?),
+            54 if !from_client => {
+                let slot = r.i16()?;
+                let mut buffs = Vec::new();
+                loop {
+                    let kind = r.u16()?;
+                    if kind == 0 {
+                        break;
+                    }
+                    if buffs.len() == 20 {
+                        return Err(Error::Invalid("NPC buff count"));
+                    }
+                    buffs.push((kind, r.u16()?));
+                }
+                Self::NpcBuffs { slot, buffs }
+            }
+            56 if from_client => Self::RequestNpcName(r.i16()?),
+            56 => Self::NpcName {
+                slot: r.i16()?,
+                name: r.string()?.to_owned(),
+                variation: r.i32()?,
+            },
+            60 => Self::NpcHome {
+                slot: r.i16()?,
+                position: r.i16s()?,
+                state: r.byte()?,
+            },
             80 => Self::PlayerChest {
                 player: r.byte()?,
                 chest: r.i16()?,
@@ -482,6 +529,39 @@ impl Packet {
                 out.put_i32_le(*count);
                 text.write(&mut out, 0)?;
                 out.put_u8(*flags);
+            }
+            Self::NpcSync(npc) => npc.write(&mut out)?,
+            Self::NpcBuffs { slot, buffs } => {
+                if buffs.len() > 20 || buffs.iter().any(|(kind, _)| *kind == 0) {
+                    return Err(Error::Invalid("NPC buffs"));
+                }
+                out.put_i16_le(*slot);
+                for &(kind, time) in buffs {
+                    out.put_u16_le(kind);
+                    out.put_u16_le(time);
+                }
+                out.put_u16_le(0);
+            }
+            Self::RequestNpcName(slot) => out.put_i16_le(*slot),
+            Self::NpcName {
+                slot,
+                name,
+                variation,
+            } => {
+                out.put_i16_le(*slot);
+                put_string(&mut out, name)?;
+                out.put_i32_le(*variation);
+            }
+            Self::NpcHome {
+                slot,
+                position,
+                state,
+            } => {
+                out.put_i16_le(*slot);
+                for v in position {
+                    out.put_i16_le(*v);
+                }
+                out.put_u8(*state);
             }
             Self::TileSection(section) => section.write(&mut out)?,
             Self::TilePatch(patch) => patch.write(&mut out)?,

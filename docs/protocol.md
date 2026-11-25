@@ -90,3 +90,14 @@ Three lists follow the last tile. An i16 count precedes each list. A chest or si
 | 39, 151 | Release the reserved slot (i16 slot and boolean), or remove the picked-up stack (i16 slot). The connection must own the stack to change or remove it. A rejected change or removal restores the current stack and reservation on the requesting socket. |
 | 31, 155, 32 | Request a chest by two i16 tile coordinates. The server replies with capacity and all slots. The current user can update a slot with its stack, prefix and type. |
 | 33, 80 | Chest open/close uses i16 chest index, two i16 coordinates and a name marker with an optional string. Index −1 closes the chest. ID 80 announces the player's slot and current chest index to peers. Chest renaming remains pending. |
+
+## Town NPCs on release 329
+
+| ID | Direction and layout |
+| --- | --- |
+| 23 | Server update. The slot and generation occupy one byte each. Position and velocity each contain two f32 components, followed by a u16 target and two flag bytes. In the first byte bits 0 and 1 encode facing and vertical direction, bits 2–5 select four optional f32 AI values, bit 6 encodes sprite direction, and bit 7 signals full life. The selected AI values precede the i16 net type. In the second byte bits 0–4 signal player scaling, statue origin, difficulty override, new spawn, and shimmer. Scaling adds a u8 player count and difficulty adds an f32. For partial life, a width byte of 1, 2 or 4 precedes signed life of that width. Catchable types append the release owner's byte. |
+| 54 | Server buff list. An i16 NPC slot precedes up to 20 pairs of u16 buff type and remaining time. A zero u16 type terminates the list. |
+| 56 | The client requests an i16 NPC slot. The server replies with the slot, a .NET name string and the i32 variation. |
+| 60 | An i16 slot, i16 home X and Y in tiles, and a status byte. Server status 1 is homeless and 2 is an assigned house. Status 0 is a housed resident without a room-manager assignment. Player-initiated moves and eviction are pending. |
+
+Section delivery includes the supported local residents. The full initial resident and buff list precedes the spawn invitation. Housing follows player spawn and precedes the entry acknowledgement.

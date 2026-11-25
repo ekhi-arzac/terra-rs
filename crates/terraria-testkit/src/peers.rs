@@ -29,7 +29,7 @@ pub(super) async fn join_capturing(
     let Packet::AssignSlot { player, .. } = response else {
         return Err("admission failed".into());
     };
-    entry::run(&mut stream, player, log, [-1, -1]).await?;
+    entry::run(&mut stream, player, log, [-1, -1], false).await?;
     let info = log
         .iter()
         .find_map(|p| match p {

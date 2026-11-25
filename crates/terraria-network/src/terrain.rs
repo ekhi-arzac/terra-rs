@@ -19,6 +19,7 @@ use tokio::{
 
 pub(super) struct LoadedWorld {
     pub data: WorldData,
+    pub residents: Vec<crate::residents::Resident>,
     join_state: bytes::Bytes,
     source: World,
     workers: Arc<Semaphore>,
@@ -119,6 +120,17 @@ impl LoadedWorld {
         let state = source.join_state()?;
         let data = state.info;
         let mut join_state = bytes::BytesMut::new();
+        let residents = crate::residents::Resident::load(&source)?;
+        for resident in &residents {
+            join_state.extend_from_slice(&Packet::NpcSync(resident.sync).encode()?);
+            join_state.extend_from_slice(
+                &Packet::NpcBuffs {
+                    slot: i16::from(resident.sync.slot),
+                    buffs: Vec::new(),
+                }
+                .encode()?,
+            );
+        }
         for p in [
             Packet::BannerState(Box::new(state.banners)),
             Packet::TowerShields(state.shields),
@@ -146,6 +158,7 @@ impl LoadedWorld {
         Ok(Self {
             data,
             chests_by_section,
+            residents,
             join_state: join_state.freeze(),
             edits: RwLock::default(),
             source,
@@ -456,6 +469,12 @@ impl LoadedWorld {
         .await??;
         out.write_all(&frame).await?;
         out.write_all(&chests).await?;
+        for resident in &self.residents {
+            let tile = resident.sync.position.map(|p| (p / 16.) as i16);
+            if Self::section_at(tile) == index {
+                write_packet(out, &Packet::NpcSync(resident.sync)).await?;
+            }
+        }
         Ok(())
     }
     pub async fn transfer<W: AsyncWrite + Unpin>(

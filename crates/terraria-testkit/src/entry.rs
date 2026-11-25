@@ -9,6 +9,7 @@ pub(super) async fn run(
     player: u8,
     log: &mut Vec<Packet>,
     personal: [i32; 2],
+    capture_town: bool,
 ) -> Result<()> {
     upload(stream, player).await?;
     write_packet(stream, &Packet::RequestWorld).await?;
@@ -50,6 +51,8 @@ pub(super) async fn run(
         let frame = read_frame(stream).await?.ok_or("EOF during world entry")?;
         match frame.id {
             2 => return Err(format!("server closed entry: {:?}", Packet::decode(&frame)?).into()),
+            23 | 54 if capture_town && !invited => log.push(Packet::decode(&frame)?),
+            60 if capture_town => log.push(Packet::decode(&frame)?),
             7 | 9 | 10 | 20 | 21 | 22 | 32 | 49 | 101 | 129 | 136 | 155 | 82
                 if frame.id != 82 || frame.payload.starts_with(&[11, 0, 0]) =>
             {
