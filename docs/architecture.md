@@ -55,3 +55,5 @@ A sparse map holds the latest tile and chest slot changes. For an active section
 Supported town residents keep their saved NPC slot, position, name, variation and housing state. The terrain sender includes local residents by section and the full list at world entry. The roster answers name requests using the same resident slots.
 
 Team membership and PvP status belong to the active connection. The roster initializes team from the stock spawn message, includes both values in join snapshots and decides party-chat recipients when it processes the command.
+
+A death report updates the roster's life and PvP death state and releases the player's open chest. A later spawn replaces the prior position, team and spawn record. Health uploads, item reservation selection, door obstruction checks and joining snapshots read the same player state.

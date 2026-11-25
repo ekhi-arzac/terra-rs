@@ -117,3 +117,10 @@ Packet 51 carries a player byte and an action byte. Actions 3 and 6 request the 
 Packet 30 carries a player byte and a PvP-enabled boolean. Packet 45 carries a player byte and a team in 0–5 (none, red, green, blue, yellow, pink). Both clients and servers use these layouts. An active connection supplies its own player identity. Peers receive the changed setting and a joining client receives both settings for each current player. PvP toggle announcements reach everyone. Team-change announcements reach the sender and members of the old and new nonzero teams.
 
 The text module's `Party` command delivers literal text in the sender’s team color to current teammates, including the sender. A player without a team receives the localized `LegacyMultiplayer.10` response. On a team, an empty message produces no delivery.
+
+
+## Player death and respawn
+
+Packet 118 begins with a player byte and a death-reason mask. In increasing bit order the selected fields are an i16 source player, i16 NPC slot, i16 projectile slot, u8 other cause, i16 projectile type, i16 item type, u8 item prefix and a .NET custom reason string. The fixed tail contains i16 damage, a byte encoding direction plus one, and a flag byte with PvP in bit 0. The server identifies the victim by the reporting socket and relays the death to peers. It sends the announcement as server-authored localized text.
+
+Late entry includes packet 135 (one player byte) before the life packet for a player with zero health. A subsequent player spawn uses packet 12 with the normal spawn layout and reaches other active clients. The client continues to report its vitals in packet 16.

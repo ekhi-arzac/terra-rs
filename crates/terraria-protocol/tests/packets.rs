@@ -56,6 +56,43 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
             vec![0, 0],
         ),
         (Packet::Appearance(a), 4, appearance),
+        (
+            Packet::PlayerDeath(terraria_protocol::PlayerDeath {
+                player: 0,
+                reason: terraria_protocol::DeathReason {
+                    other: Some(0),
+                    ..Default::default()
+                },
+                damage: 99,
+                direction: 0,
+                pvp: false,
+            }),
+            118,
+            vec![0, 8, 0, 99, 0, 1, 0],
+        ),
+        (
+            Packet::PlayerDeath(terraria_protocol::PlayerDeath {
+                player: 2,
+                reason: terraria_protocol::DeathReason {
+                    player: Some(1),
+                    npc: Some(4),
+                    projectile: Some(901),
+                    other: Some(0),
+                    projectile_type: Some(3),
+                    item: Some(5),
+                    prefix: Some(6),
+                    custom: Some("ouch".into()),
+                },
+                damage: 34,
+                direction: -1,
+                pvp: true,
+            }),
+            118,
+            vec![
+                2, 255, 1, 0, 4, 0, 133, 3, 0, 3, 0, 5, 0, 6, 4, 111, 117, 99, 104, 34, 0, 0, 1,
+            ],
+        ),
+        (Packet::SetDeadAppearance(4), 135, vec![4]),
         (Packet::PlayerTeam { player: 4, team: 5 }, 45, vec![4, 5]),
         (
             Packet::PlayerPvp {

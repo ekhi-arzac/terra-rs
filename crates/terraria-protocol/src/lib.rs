@@ -1,4 +1,6 @@
 //! The direct TCP protocol of Terraria 1.4.6.
+mod death;
+pub use death::{DeathReason, PlayerDeath};
 mod banners;
 pub use banners::{BANNER_TYPES, BannerState};
 mod items;

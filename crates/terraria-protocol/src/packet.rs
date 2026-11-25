@@ -163,6 +163,8 @@ pub enum Packet {
         chest: i16,
     },
     Spawn(Spawn),
+    PlayerDeath(crate::PlayerDeath),
+    SetDeadAppearance(u8),
     Movement(crate::Movement),
     PlayerZones {
         player: u8,
@@ -250,6 +252,8 @@ impl Packet {
             Self::ChestSize { .. } => 155,
             Self::ChestItem { .. } => 32,
             Self::Spawn(_) => 12,
+            Self::PlayerDeath(_) => 118,
+            Self::SetDeadAppearance(_) => 135,
             Self::Movement(_) => 13,
             Self::PlayerZones { .. } => 36,
             Self::PlayerActive { .. } => 14,
@@ -471,6 +475,8 @@ impl Packet {
                 prefix: r.byte()?,
                 item: r.i16()?,
             },
+            118 => Self::PlayerDeath(crate::PlayerDeath::read(&mut r)?),
+            135 => Self::SetDeadAppearance(r.byte()?),
             12 => Self::Spawn(Spawn {
                 player: r.byte()?,
                 point: r.i16s()?,
@@ -837,6 +843,8 @@ impl Packet {
                     out.put_u16_le(*n)
                 }
             }
+            Self::PlayerDeath(p) => p.write(&mut out)?,
+            Self::SetDeadAppearance(player) => out.put_u8(*player),
             Self::Spawn(s) => {
                 out.put_u8(s.player);
                 for v in s.point {

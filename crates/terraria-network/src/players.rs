@@ -1,4 +1,5 @@
 //! The roster owner serializes membership and player updates. Socket writes never run on it.
+mod death;
 mod teams;
 use crate::doors::{self, Door};
 use crate::drops::Drops;
@@ -41,6 +42,8 @@ struct Player {
     sections: BTreeSet<[u16; 2]>,
     chest: Option<i16>,
     movement: Option<Movement>,
+    dead: bool,
+    pvp_death: bool,
     hostile: bool,
     team: u8,
     zones: Option<([u8; 5], u8)>,
@@ -98,6 +101,9 @@ impl Player {
             add(Packet::Movement(m))?;
         }
         if let Some(v) = self.character.life {
+            if v.current <= 0 {
+                add(Packet::SetDeadAppearance(slot))?;
+            }
             add(Packet::Life(v))?;
         }
         if let Some(v) = self.character.mana {
@@ -201,7 +207,7 @@ impl Roster {
         let positions = self
             .peers
             .iter()
-            .filter(|(_, p)| p.out.is_some() && p.character.life.is_none_or(|v| v.current > 0))
+            .filter(|(_, p)| p.out.is_some() && !p.dead)
             .map(|(&id, p)| (id, p.movement.map_or(spawn, |m| m.position)))
             .collect();
         let mut bytes = BytesMut::new();
@@ -479,7 +485,7 @@ impl Roster {
         };
         let blocked = action == 1
             && self.peers.values().any(|player| {
-                player.character.life.is_none_or(|life| life.current > 0)
+                !player.dead
                     && player
                         .movement
                         .is_some_and(|m| door.overlaps_hinge(m.position))
@@ -539,6 +545,9 @@ impl Roster {
             } => {
                 let mut player = Player {
                     team: character.spawn.map_or(0, |spawn| spawn.team),
+                    dead: character.life.is_some_and(|v| v.current <= 0)
+                        || character.spawn.is_some_and(|s| s.respawn_timer > 0),
+                    pvp_death: false,
                     hostile: false,
                     character,
                     sections: sent,
@@ -620,6 +629,8 @@ impl Roster {
                     return Ok(());
                 }
                 match packet {
+                    Packet::PlayerDeath(death) => self.player_death(death)?,
+                    Packet::Spawn(spawn) => self.respawn(spawn)?,
                     Packet::PlayerTeam { team, .. } => self.change_team(slot, team)?,
                     Packet::PlayerPvp { hostile, .. } => self.change_pvp(slot, hostile)?,
                     Packet::ChatCommand { command, text } if command == "Party" => {
@@ -1048,7 +1059,10 @@ impl Roster {
                                 zones, town_npcs, ..
                             } => peer.zones = Some((*zones, *town_npcs)),
                             Packet::Movement(m) => peer.movement = Some(*m),
-                            Packet::Life(v) => peer.character.life = Some(*v),
+                            Packet::Life(v) => {
+                                peer.character.life = Some(*v);
+                                peer.dead = v.current <= 0;
+                            }
                             Packet::Mana(v) => peer.character.mana = Some(*v),
                             Packet::Buffs { types, .. } => peer.character.buffs.clone_from(types),
                             Packet::Equipment(e) => {
@@ -1135,7 +1149,8 @@ fn resource(block: u16) -> Option<i16> {
 fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, ProtocolError> {
     if !matches!(
         frame.id,
-        5 | 13
+        5 | 12
+            | 13
             | 16
             | 17
             | 19
@@ -1155,6 +1170,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 69
             | 79
             | 82
+            | 118
             | 147
             | 151
             | 154
@@ -1195,6 +1211,8 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
                 *prefix = 0;
             }
         }
+        Packet::Spawn(s) if s.team <= 5 => s.player = slot,
+        Packet::PlayerDeath(d) => d.player = slot,
         Packet::Ping => {}
         Packet::Movement(m) => m.player = slot,
         Packet::Life(v) => {

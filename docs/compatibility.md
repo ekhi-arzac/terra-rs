@@ -165,3 +165,8 @@ Rust tests also cover the idle clock, save/reload, fractional time, frozen time,
 ## Teams, PvP settings and party chat
 
 The three-player `terraria-testkit teams ADDR` scenario passed against the installed 1.4.6.1 server and Rust. It checked a no-team chat error, a red team member joining and switching to blue, a PvP toggle, and a third player joining after the toggle. Both teammates received the red chat and the former teammate saw the switch announcement. The third player received the subsequent public chat without receiving the private text or either team announcement. A separate official-server run recorded the localized announcement and RGB color of each team.
+
+
+## Player death and respawn
+
+The same three-player `terraria-testkit respawn ADDR` scenario passed on Rust and the installed official server. A player reported a poison death. Both active sockets received the localized death announcement, and the observer received the death and respawn packets. A third player saw zero health and the dead-player marker before respawn. After respawn a fresh join saw 150 of 300 life. The test used normal difficulty and the world spawn. Environmental death messages currently select a fixed stock phrasing. Entity or item-specific kill text, equipment effects, special spawn validation, and death-generated loot remain incomplete.

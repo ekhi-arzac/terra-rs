@@ -53,9 +53,8 @@ pub(super) async fn run(
             2 => return Err(format!("server closed entry: {:?}", Packet::decode(&frame)?).into()),
             23 | 54 if capture_town && !invited => log.push(Packet::decode(&frame)?),
             60 if capture_town => log.push(Packet::decode(&frame)?),
-            7 | 9 | 10 | 20 | 21 | 22 | 30 | 45 | 32 | 49 | 101 | 129 | 136 | 155 | 82
-                if frame.id != 82 || frame.payload.starts_with(&[11, 0, 0]) =>
-            {
+            7 | 9 | 10 | 16 | 20 | 21 | 22 | 30 | 32 | 45 | 49 | 101 | 129 | 135 | 136 | 155
+            | 82 if frame.id != 82 || frame.payload.starts_with(&[11, 0, 0]) => {
                 let p = Packet::decode(&frame)?;
                 match &p {
                     Packet::Status { count, .. } => {
