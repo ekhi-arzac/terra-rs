@@ -140,6 +140,10 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
 
 #[test]
 fn layouts_round_trip_and_reject_truncation_and_trailing_bytes() {
+    assert_eq!(
+        Packet::decode_client(&frame(51, &[2, 1])),
+        Err(Error::Unknown(51))
+    );
     for (packet, id, payload) in examples() {
         let mut bytes = BytesMut::from(packet.encode().unwrap().as_ref());
         assert_eq!(bytes[..2], ((payload.len() + 3) as u16).to_le_bytes());

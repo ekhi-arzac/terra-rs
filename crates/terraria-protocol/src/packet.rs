@@ -432,7 +432,7 @@ impl Packet {
                 dusk: match r.byte()? {
                     3 => false,
                     6 => true,
-                    _ => return Err(Error::Invalid("unsupported miscellaneous event")),
+                    _ => return Err(Error::Unknown(51)),
                 },
             },
             56 if from_client => Self::RequestNpcName(r.i16()?),
