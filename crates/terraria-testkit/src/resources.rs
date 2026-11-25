@@ -19,7 +19,7 @@ async fn next(stream: &mut TcpStream, id: u8) -> Result<Packet> {
         }
     }
 }
-fn visible_block(log: &[Packet], [x, y]: [i16; 2]) -> Option<Option<u16>> {
+fn visible_tile(log: &[Packet], [x, y]: [i16; 2]) -> Option<terraria_world::Tile> {
     log.iter().rev().find_map(|p| {
         if let Packet::TilePatch(patch) = p {
             let dx = i32::from(x) - i32::from(patch.origin[0]);
@@ -27,9 +27,7 @@ fn visible_block(log: &[Packet], [x, y]: [i16; 2]) -> Option<Option<u16>> {
             if (0..i32::from(patch.size[0])).contains(&dx)
                 && (0..i32::from(patch.size[1])).contains(&dy)
             {
-                return Some(
-                    patch.tiles[dx as usize * usize::from(patch.size[1]) + dy as usize].block,
-                );
+                return Some(patch.tiles[dx as usize * usize::from(patch.size[1]) + dy as usize]);
             }
         }
         let Packet::TileSection(s) = p else {
@@ -43,12 +41,51 @@ fn visible_block(log: &[Packet], [x, y]: [i16; 2]) -> Option<Option<u16>> {
         let mut remaining = dy as u32 * u32::from(s.size[0]) + dx as u32;
         for run in &s.runs {
             if remaining < u32::from(run.count) {
-                return Some(run.tile.block);
+                return Some(run.tile);
             }
             remaining -= u32::from(run.count);
         }
         None
     })
+}
+
+fn matches_edit(frame: &terraria_protocol::Frame, request: &Packet) -> Result<bool> {
+    let Packet::TileChange {
+        position,
+        action,
+        value,
+        ..
+    } = request
+    else {
+        return Ok(false);
+    };
+    match frame.id {
+        17 => Ok(Packet::decode(frame)? == *request),
+        20 => Ok(
+            visible_tile(&[Packet::decode(frame)?], *position).is_some_and(|tile| match action {
+                0 => tile.block.is_none(),
+                1 => tile.block == Some(*value as u16),
+                2 => tile.wall == 0,
+                3 => tile.wall == *value as u16,
+                _ => false,
+            }),
+        ),
+        _ => Ok(false),
+    }
+}
+
+async fn observe_edit(stream: &mut TcpStream, edit: &Packet) -> Result<()> {
+    loop {
+        let frame = read_frame(stream)
+            .await?
+            .ok_or("EOF waiting for terrain edit")?;
+        if frame.id == 2 {
+            return Err("kicked while waiting for terrain".into());
+        }
+        if matches_edit(&frame, edit)? {
+            return Ok(());
+        }
+    }
 }
 
 pub(super) async fn run(
@@ -196,7 +233,7 @@ pub(super) async fn run(
         style: 0,
     };
     write_packet(&mut a, &place).await?;
-    observe(&mut b, &place).await?;
+    observe_edit(&mut b, &place).await?;
     let mine = Packet::TileChange {
         action: 0,
         position: cell,
@@ -210,7 +247,7 @@ pub(super) async fn run(
     while !mined || resource.is_none() {
         let f = read_frame(&mut b).await?.ok_or("EOF mining stone")?;
         match f.id {
-            17 => mined |= Packet::decode(&f)? == mine,
+            17 | 20 => mined |= matches_edit(&f, &mine)?,
             21 => {
                 if let Packet::DroppedItem(i) = Packet::decode(&f)?
                     && i.item == 3
@@ -233,7 +270,7 @@ pub(super) async fn run(
     .await?;
     let mut log = Vec::new();
     let (_rejoined, _, _, _) = super::peers::join_capturing(addr, password, &mut log).await?;
-    if visible_block(&log, cell) != Some(None) || !log.contains(&edit) || !log.iter().any(|p| matches!(p,Packet::DroppedItem(i) if Some(i.slot) == resource && i.item == 3 && i.stack == 1)) {
+    if visible_tile(&log,cell).is_none_or(|tile| tile.block.is_some()) || !log.contains(&edit) || !log.iter().any(|p| matches!(p,Packet::DroppedItem(i) if Some(i.slot) == resource && i.item == 3 && i.stack == 1)) {
         return Err("rejoin did not reproduce mined cell, dropped stone and chest contents".into());
     }
     println!("Observed placement, mining, a stone drop, and the tile, chest and item on rejoin.");
@@ -303,20 +340,30 @@ mod tree_tests {
             ..Tile::default()
         }
     }
-    async fn wait_for_wood(stream: &mut TcpStream, expected: Option<&Packet>) -> Result<Packet> {
-        let mut cuts = 0;
+    fn visible_block(log: &[Packet], pos: [i16; 2]) -> Option<Option<u16>> {
+        visible_tile(log, pos).map(|tile| tile.block)
+    }
+
+    async fn wait_for_wood(stream: &mut TcpStream) -> Result<Packet> {
+        let mut patches = 0;
         loop {
             let frame = read_frame(stream).await?.ok_or("EOF waiting for wood")?;
             match frame.id {
-                17 => {
-                    assert_eq!(Some(&Packet::decode(&frame)?), expected);
-                    cuts += 1;
+                20 => {
+                    let patch = Packet::decode(&frame)?;
+                    for cell in HARVESTED {
+                        assert_eq!(
+                            visible_block(std::slice::from_ref(&patch), cell),
+                            Some(None)
+                        );
+                    }
+                    patches += 1;
                 }
                 21 => {
-                    assert_eq!(cuts, usize::from(expected.is_some()));
+                    assert_eq!(patches, 1);
                     return Ok(Packet::decode(&frame)?);
                 }
-                10 | 20 => return Err("tree harvest sent a redundant terrain update".into()),
+                10 | 17 => return Err("tree harvest sent a redundant terrain update".into()),
                 _ => {}
             }
         }
@@ -391,8 +438,8 @@ mod tree_tests {
             )
             .await?;
             write_packet(&mut a, &request).await?;
-            let a_drop = wait_for_wood(&mut a, None).await?;
-            let b_drop = wait_for_wood(&mut b, Some(&request)).await?;
+            let a_drop = wait_for_wood(&mut a).await?;
+            let b_drop = wait_for_wood(&mut b).await?;
             assert_eq!(a_drop, b_drop);
             let Packet::DroppedItem(wood) = a_drop else {
                 return Err("missing jungle wood".into());
@@ -418,7 +465,8 @@ mod tree_tests {
                 style: 0,
             };
             write_packet(&mut a, &trim_grass).await?;
-            observe(&mut b, &trim_grass).await?;
+            observe_edit(&mut b, &trim_grass).await?;
+            observe_edit(&mut a, &trim_grass).await?;
             assert_no_terrain_update(&mut a).await?;
 
             // An initial hit strips sod once. Repeating the hit against dirt stays quiet.
@@ -429,7 +477,10 @@ mod tree_tests {
                 style: 0,
             };
             write_packet(&mut a, &strip_sod).await?;
-            observe(&mut b, &strip_sod).await?;
+            for socket in [&mut a, &mut b] {
+                let patch = next(socket, 20).await?;
+                assert_eq!(visible_block(&[patch], SOD), Some(Some(0)));
+            }
             write_packet(&mut a, &strip_sod).await?;
             assert_no_terrain_update(&mut a).await?;
             assert_no_terrain_update(&mut b).await?;
@@ -470,5 +521,125 @@ mod tree_tests {
         for [x, y] in HARVESTED {
             assert_eq!(saved.tile(x as u32, y as u32).unwrap().block, None);
         }
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::*;
+    use std::{collections::BTreeMap, time::Duration};
+    use terraria_world::{Tile, World};
+    use tokio::{net::TcpListener, sync::oneshot, time::timeout};
+
+    #[tokio::test]
+    async fn section_snapshots_precede_live_edits_and_contested_wall_drops_once() {
+        let cell = [4003, 1051];
+        let section = [20, 7];
+        let origin = [4000, 1050];
+        let source =
+            World::parse(include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec()).unwrap();
+        let world = source
+            .with_edits(&BTreeMap::from([(cell, Tile::default())]), &BTreeMap::new())
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("shared.wld");
+        world.save(&file).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, end) = oneshot::channel();
+        let task = tokio::spawn(terraria_network::serve_with_save(
+            listener,
+            2.try_into().unwrap(),
+            String::new(),
+            Some(world),
+            Some(file.clone()),
+            async {
+                let _ = end.await;
+            },
+        ));
+        timeout(Duration::from_secs(10), async {
+            let (mut a, first, _, _) = join(addr, None).await?;
+            let (mut b, second, _, _) = join(addr, None).await?;
+            let request = Packet::RequestSection(section);
+            let edit = |action, value| Packet::TileChange {
+                action,
+                position: cell,
+                value,
+                style: 0,
+            };
+
+            // The same socket queues the section and a newer edit back to back.
+            write_packet(&mut a, &request).await?;
+            write_packet(&mut a, &edit(1, 1)).await?;
+            let snapshot = next(&mut a, 10).await?;
+            assert!(matches!(&snapshot,Packet::TileSection(s) if s.origin==origin));
+            assert_eq!(visible_tile(&[snapshot], cell).unwrap().block, None);
+            observe_edit(&mut a, &edit(1, 1)).await?;
+
+            // The unsubscribed socket gets the placed block in its snapshot. The later
+            // wall edit arrives on both sockets and leaves the foreground block intact.
+            write_packet(&mut b, &request).await?;
+            write_packet(&mut b, &edit(3, 4)).await?;
+            let snapshot = next(&mut b, 10).await?;
+            let tile = visible_tile(&[snapshot], cell).unwrap();
+            assert_eq!((tile.block, tile.wall), (Some(1), 0));
+            for socket in [&mut a, &mut b] {
+                let patch = next(socket, 20).await?;
+                let tile = visible_tile(&[patch], cell).unwrap();
+                assert_eq!((tile.block, tile.wall), (Some(1), 4));
+            }
+
+            let break_wall = edit(2, 0);
+            tokio::try_join!(
+                write_packet(&mut a, &break_wall),
+                write_packet(&mut b, &break_wall)
+            )?;
+            observe_edit(&mut a, &break_wall).await?;
+            observe_edit(&mut b, &break_wall).await?;
+            let drop = next(&mut a, 21).await?;
+            assert!(matches!(&drop,Packet::DroppedItem(item) if (item.item,item.stack)==(93,1)));
+            observe(&mut b, &drop).await?;
+            let Packet::ItemOwner(owner) = next(&mut a, 22).await? else {
+                unreachable!()
+            };
+            let (winner, other) = if owner.player == first {
+                (&mut a, &mut b)
+            } else {
+                assert_eq!(owner.player, second);
+                (&mut b, &mut a)
+            };
+            let removal = Packet::RemoveItem(owner.slot);
+            write_packet(other, &removal).await?;
+            observe(other, &drop).await?; // Recreate the stack the non-owner predicted removing.
+            write_packet(winner, &removal).await?;
+            observe(other, &removal).await?;
+
+            for socket in [winner, other] {
+                write_packet(socket, &Packet::Ping).await?;
+                loop {
+                    let frame = read_frame(socket)
+                        .await?
+                        .ok_or("EOF after contested wall break")?;
+                    assert!(
+                        !matches!(frame.id, 17 | 20 | 21),
+                        "duplicate terrain or drop"
+                    );
+                    if frame.id == 154 {
+                        break;
+                    }
+                }
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        stop.send(()).unwrap();
+        task.await.unwrap().unwrap();
+        let saved = World::load(file)
+            .unwrap()
+            .tile(cell[0] as u32, cell[1] as u32)
+            .unwrap();
+        assert_eq!((saved.block, saved.wall), (Some(1), 0));
     }
 }
