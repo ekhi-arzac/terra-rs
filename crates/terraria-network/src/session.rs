@@ -171,8 +171,8 @@ impl<'w> Session<'w> {
                     self.character.equipment.insert(e.slot, e);
                 }
             }
-            // GetData consumes the UUID without storing it. A direct server has no host token.
-            Packet::ClientUuid(_) | Packet::HostToken(_) => {}
+            // Client-provided platform identity and host status are unused in direct-IP play.
+            Packet::ClientUuid(_) | Packet::HostToken(_) | Packet::PlayerPlatform(_) => {}
             _ => return self.close(NetworkText::key("LegacyMultiplayer.2")),
         }
         None

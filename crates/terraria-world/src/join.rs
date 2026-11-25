@@ -1,4 +1,4 @@
-//! Project the release-326 saved header into the state sent before the first game tick.
+//! Project the saved world header into the state sent before the first game tick.
 use super::{Error, World};
 use terraria_binary::Reader;
 use terraria_protocol::WorldData;
@@ -195,6 +195,7 @@ impl World {
             .map(|_| r.i16s())
             .collect::<Result<_, _>>()?;
         let [dual, more_lightning, no_lightning] = bools(&mut r)?;
+        let no_spiders = meta.file_version >= 328 && r.byte()? != 0;
         r.string()?; // World-generation manifest.
         let progression = [
             bits([
@@ -262,7 +263,7 @@ impl World {
                 permanent_xmas,
                 more_lightning,
                 no_lightning,
-                false,
+                no_spiders,
                 false,
                 false,
             ]),

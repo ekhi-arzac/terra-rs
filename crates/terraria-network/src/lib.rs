@@ -9,8 +9,20 @@ pub use session::{Character, Phase, Session};
 use terrain::LoadedWorld;
 
 use bytes::Bytes;
-use std::{collections::BTreeSet, future::Future, io, num::NonZeroU8, sync::Arc, time::Duration};
-use terraria_protocol::{Error as ProtocolError, Frame, NetworkText, Packet, frame_len};
+use std::{
+    collections::BTreeSet,
+    future::Future,
+    io,
+    num::NonZeroU8,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::Duration,
+};
+use terraria_protocol::{
+    Error as ProtocolError, Frame, NetworkText, Packet, ServerInfo, frame_len,
+};
 use thiserror::Error;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -60,6 +72,7 @@ async fn connection(
     password: &str,
     world: Option<&Arc<LoadedWorld>>,
     events: &mpsc::Sender<Event>,
+    info: Option<ServerInfo>,
 ) -> Result<(), Error> {
     stream.set_nodelay(true)?;
     let mut session = world.map_or_else(
@@ -69,13 +82,16 @@ async fn connection(
     let mut sent = BTreeSet::new();
     let mut revision = 0;
     let join = async {
+        if let Some(info) = info {
+            write_packet(&mut stream, &Packet::ServerInfo(info)).await?;
+        }
         loop {
             let Some(frame) = read_frame(&mut stream).await? else {
                 break;
             };
             if !matches!(
                 frame.id,
-                1 | 4 | 5 | 6 | 8 | 12 | 16 | 38 | 42 | 50 | 68 | 147 | 161
+                1 | 4 | 5 | 6 | 8 | 12 | 16 | 38 | 42 | 50 | 68 | 147 | 161 | 164
             ) {
                 tracing::warn!(slot, packet_id=frame.id, phase=?session.phase(), "unexpected join packet");
                 write_packet(
@@ -172,7 +188,21 @@ pub async fn serve_with_save(
     let password: Arc<str> = password.into();
     let mut tasks = JoinSet::new();
     let (events, input) = mpsc::channel(256);
-    let roster = tokio::spawn(Roster::new(world_info.clone()).run(input));
+    let player_count = Arc::new(AtomicU8::new(0));
+    let roster = tokio::spawn(Roster::new(world_info.clone(), player_count.clone()).run(input));
+    let local_addr = listener.local_addr()?;
+    let server_info = world_info.as_ref().map(|w| ServerInfo {
+        port: i32::from(local_addr.port()),
+        world: w.data.name.clone(),
+        host: local_addr.ip().to_string(),
+        width: w.data.size[0] as u16,
+        crimson: w.data.progression[1] & 0x20 != 0,
+        difficulty: i32::from(w.data.game_mode),
+        capacity: max_players.get(),
+        players: 0,
+        note: String::new(),
+        mapped_address: None,
+    });
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -191,9 +221,13 @@ pub async fn serve_with_save(
                 let password = Arc::clone(&password);
                 let world_info=world_info.clone();
                 let events=events.clone();
+                let info = server_info.clone().map(|mut info| {
+                    info.players = player_count.load(Ordering::Relaxed);
+                    info
+                });
                 tasks.spawn(async move {
                     debug!(%peer, slot, "accepted client");
-                    if let Err(e)=connection(socket,slot,&password,world_info.as_ref(),&events).await{
+                    if let Err(e)=connection(socket,slot,&password,world_info.as_ref(),&events,info).await{
                         debug!(%peer,slot,error=%e,"connection closed");
                     }
                     let _=events.send(Event::Leave(slot)).await;

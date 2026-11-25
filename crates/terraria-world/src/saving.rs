@@ -11,7 +11,7 @@ pub struct ChestStack {
 }
 
 impl World {
-    /// Build a new validated release-326 image and preserve opaque sections verbatim.
+    /// Build a new validated image of the original world version and preserve opaque sections verbatim.
     pub fn with_edits(
         &self,
         blocks: &BTreeMap<[i16; 2], Tile>,

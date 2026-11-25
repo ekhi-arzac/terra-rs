@@ -293,3 +293,30 @@ fn edited_runs_and_chest_slots_survive_reopening_and_keep_the_original_backup() 
         bytes
     );
 }
+
+#[test]
+fn release_329_projects_the_optional_no_spiders_world_flag() {
+    let mut bytes = include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec();
+    let previous = World::parse(bytes.clone()).unwrap();
+    // In this fixture the manifest has a two-byte string length prefix.
+    let manifest = bytes
+        .windows(b"{\"GenPassResults\"".len())
+        .position(|w| w == b"{\"GenPassResults\"")
+        .unwrap()
+        - 2;
+    bytes.insert(manifest, 1);
+    bytes[..4].copy_from_slice(&329i32.to_le_bytes());
+    for index in 1..11 {
+        let value = (offset(&bytes, index) as i32 + 1).to_le_bytes();
+        bytes[26 + index * 4..30 + index * 4].copy_from_slice(&value);
+    }
+    let current = World::parse(bytes).unwrap();
+    assert_eq!(current.metadata().file_version, 329);
+    let mut expected = previous.world_data().unwrap();
+    expected.progression[10] |= 0x20;
+    assert_eq!(current.world_data().unwrap(), expected);
+    assert_eq!(
+        current.section([10, 1]).unwrap(),
+        previous.section([10, 1]).unwrap()
+    );
+}

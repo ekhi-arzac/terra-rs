@@ -109,13 +109,18 @@ pub(super) struct Roster {
     peers: BTreeMap<u8, Player>,
     drops: Drops,
     world: Option<std::sync::Arc<LoadedWorld>>,
+    player_count: std::sync::Arc<std::sync::atomic::AtomicU8>,
 }
 impl Roster {
-    pub fn new(world: Option<std::sync::Arc<LoadedWorld>>) -> Self {
+    pub fn new(
+        world: Option<std::sync::Arc<LoadedWorld>>,
+        player_count: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    ) -> Self {
         Self {
             peers: BTreeMap::new(),
             drops: Drops::default(),
             world,
+            player_count,
         }
     }
     fn spawn_drop(
@@ -225,10 +230,14 @@ impl Roster {
                         self.send(None, Packet::Spawn(spawn).encode()?);
                     }
                     self.peers.insert(slot, player);
+                    self.player_count
+                        .store(self.peers.len() as u8, std::sync::atomic::Ordering::Relaxed);
                 }
             }
             Event::Leave(slot) => {
                 if let Some(player) = self.peers.remove(&slot) {
+                    self.player_count
+                        .store(self.peers.len() as u8, std::sync::atomic::Ordering::Relaxed);
                     if player.chest.is_some() {
                         self.send(
                             None,
@@ -572,7 +581,7 @@ pub(super) async fn play(
     let (section_tx, mut section_rx) = mpsc::channel(4);
     let (mut r, mut w) = stream.split();
     let read = async {
-        let mut reported_ids = [false; 163];
+        let mut reported_ids = [false; 166];
         let mut reported_modules = std::collections::BTreeSet::new();
         while let Some(frame) = read_frame(&mut r).await? {
             if frame.id == 82
@@ -597,7 +606,7 @@ pub(super) async fn play(
             }
             let packet = match update(&frame, slot) {
                 Ok(p) => p,
-                Err(ProtocolError::Unknown(id)) if (1..=162).contains(&id) => {
+                Err(ProtocolError::Unknown(id)) if (1..=165).contains(&id) => {
                     if !std::mem::replace(&mut reported_ids[usize::from(id)], true) {
                         tracing::info!(
                             slot,

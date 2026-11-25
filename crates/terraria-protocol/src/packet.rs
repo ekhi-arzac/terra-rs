@@ -155,6 +155,8 @@ pub enum Packet {
         hidden_accessories: u16,
     },
     HostToken(String),
+    ServerInfo(crate::ServerInfo),
+    PlayerPlatform(crate::PlayerPlatform),
 }
 
 impl Packet {
@@ -200,6 +202,8 @@ impl Packet {
             Self::ClientUuid(_) => 68,
             Self::Loadout { .. } => 147,
             Self::HostToken(_) => 161,
+            Self::ServerInfo(_) => 163,
+            Self::PlayerPlatform(_) => 164,
         }
     }
 
@@ -393,6 +397,8 @@ impl Packet {
                 hidden_accessories: r.u16()?,
             },
             161 => Self::HostToken(r.string()?.to_owned()),
+            163 if !from_client => Self::ServerInfo(crate::ServerInfo::read(&mut r)?),
+            164 => Self::PlayerPlatform(crate::PlayerPlatform::read(&mut r)?),
             id => return Err(Error::Unknown(id)),
         };
         if !r.0.is_empty() {
@@ -410,6 +416,8 @@ impl Packet {
             Self::Hello(s) | Self::ClientUuid(s) | Self::Password(s) | Self::HostToken(s) => {
                 put_string(&mut out, s)?
             }
+            Self::ServerInfo(info) => info.write(&mut out)?,
+            Self::PlayerPlatform(platform) => platform.write(&mut out)?,
             Self::Kick(t) => t.write(&mut out, 0)?,
             Self::AssignSlot { player, special } => {
                 out.extend_from_slice(&[*player, u8::from(*special)])

@@ -2,7 +2,7 @@ use bytes::{Bytes, BytesMut};
 use proptest::prelude::*;
 use terraria_protocol::{
     Appearance, Equipment, Error, Frame, GREETING, MAX_BUFFS, MAX_FRAME, NetworkText, Packet,
-    Vitals,
+    PlayerPlatform, ServerInfo, Vitals,
 };
 
 fn frame(id: u8, payload: &[u8]) -> Frame {
@@ -40,7 +40,7 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
         (
             Packet::Hello(GREETING.into()),
             1,
-            b"\x0bTerraria326".to_vec(),
+            b"\x0bTerraria329".to_vec(),
         ),
         (
             Packet::Kick(NetworkText::key("LegacyMultiplayer.4")),
@@ -92,6 +92,33 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
             vec![3, 2, 0, 1],
         ),
         (Packet::HostToken("abc".into()), 161, b"\x03abc".to_vec()),
+        (
+            Packet::ServerInfo(ServerInfo {
+                port: 18890,
+                world: "Oracle".into(),
+                host: "ekhilaptop".into(),
+                width: 4200,
+                crimson: true,
+                difficulty: 0,
+                capacity: 8,
+                players: 0,
+                note: String::new(),
+                mapped_address: None,
+            }),
+            163,
+            b"\xca\x49\0\0\x06Oracle\x0aekhilaptoph\x10\x01\0\0\0\0\x08\0\0\0".to_vec(),
+        ),
+        (
+            Packet::PlayerPlatform(PlayerPlatform {
+                player: 3,
+                platform: 5,
+                id: "123".into(),
+                name: "Ada".into(),
+                host: false,
+            }),
+            164,
+            b"\x03\x05\x03123\x03Ada\0".to_vec(),
+        ),
     ]
 }
 

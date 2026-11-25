@@ -12,7 +12,7 @@ use tokio::{
 fn gates_upload_on_version_and_password() {
     let mut s = Session::new(2, false);
     assert_eq!(
-        s.handle(Packet::Hello("different".into()), ""),
+        s.handle(Packet::Hello("Terraria326".into()), ""),
         Some(Packet::Kick(NetworkText::key("LegacyMultiplayer.4")))
     );
     assert_eq!(s.phase(), &Phase::Closed);

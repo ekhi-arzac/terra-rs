@@ -1,4 +1,4 @@
-//! Lossless inspection of the sectioned world format written by release 326.
+//! Lossless inspection of the sectioned world format written by releases 326 through 329.
 mod cavern;
 mod npcs;
 pub use npcs::{Npc, TownNpc};
@@ -21,7 +21,8 @@ use tempfile::NamedTempFile;
 use terraria_binary::Reader;
 use thiserror::Error;
 
-pub const WORLD_VERSION: i32 = 326;
+pub const WORLD_VERSION: i32 = 329;
+const MIN_WORLD_VERSION: i32 = 326;
 const MAX_FILE: usize = 512 * 1024 * 1024;
 const SECTION_COUNT: usize = 11;
 
@@ -31,7 +32,7 @@ pub enum Error {
     Io(#[from] io::Error),
     #[error("invalid world field: {0}")]
     Field(#[from] terraria_binary::Error),
-    #[error("unsupported world version {0} (expected 326)")]
+    #[error("unsupported world version {0} (expected 326 through 329)")]
     Version(i32),
     #[error("invalid world: {0}")]
     Invalid(&'static str),
@@ -39,6 +40,7 @@ pub enum Error {
 
 #[derive(Debug)]
 pub struct Metadata {
+    pub file_version: i32,
     pub name: String,
     pub seed: String,
     pub world_id: i32,
@@ -111,7 +113,7 @@ impl World {
         }
         let mut r = Reader(&data);
         let version = r.i32()?;
-        if version != WORLD_VERSION {
+        if !(MIN_WORLD_VERSION..=WORLD_VERSION).contains(&version) {
             return Err(Error::Version(version));
         }
         if &r.take::<8>()? != b"relogic\x02" {
@@ -141,7 +143,7 @@ impl World {
         }
 
         let mut header = Reader(&data[offsets[0]..offsets[1]]);
-        let (meta, flags_len) = metadata(&mut header, revision, favorite)?;
+        let (meta, flags_len) = metadata(&mut header, version, revision, favorite)?;
         let flags = offsets[1] - flags_len..offsets[1];
         let mut footer = Reader(&data[offsets[10]..]);
         if footer.byte()? == 0 || footer.string()? != meta.name || footer.i32()? != meta.world_id {
@@ -259,7 +261,12 @@ impl World {
     }
 }
 
-fn metadata(r: &mut Reader<'_>, revision: u32, favorite: bool) -> Result<(Metadata, usize), Error> {
+fn metadata(
+    r: &mut Reader<'_>,
+    file_version: i32,
+    revision: u32,
+    favorite: bool,
+) -> Result<(Metadata, usize), Error> {
     let name = r.string()?.to_owned();
     let seed = r.string()?.to_owned();
     let generator_version = u64::from_le_bytes(r.take()?);
@@ -288,6 +295,7 @@ fn metadata(r: &mut Reader<'_>, revision: u32, favorite: bool) -> Result<(Metada
     let daytime = r.byte()? != 0;
     Ok((
         Metadata {
+            file_version,
             name,
             seed,
             world_id,

@@ -36,9 +36,16 @@ impl Scenario {
 }
 
 async fn receive(stream: &mut TcpStream, log: &mut Vec<Packet>) -> Result<Packet> {
-    let frame = read_frame(stream)
+    let mut frame = read_frame(stream)
         .await?
         .ok_or("unexpected end of response sequence")?;
+    if frame.id == 163 {
+        let info = Packet::decode(&frame)?;
+        println!("  <- {info:?}");
+        frame = read_frame(stream)
+            .await?
+            .ok_or("missing admission response")?;
+    }
     if !matches!(frame.id, 2 | 3 | 37) {
         return Err(format!("unexpected response ID {}", frame.id).into());
     }
@@ -78,6 +85,13 @@ async fn upload(stream: &mut TcpStream, slot: u8) -> Result<()> {
             ..appearance(slot)
         }),
         Packet::ClientUuid("direct-tcp-probe".into()),
+        Packet::PlayerPlatform(terraria_protocol::PlayerPlatform {
+            player: slot,
+            platform: 0,
+            id: String::new(),
+            name: String::new(),
+            host: false,
+        }),
         Packet::Life(v),
         Packet::Mana(Vitals {
             current: 20,
@@ -135,7 +149,7 @@ async fn probe(
     let mut stream = TcpStream::connect(addr).await?;
     let mut log = Vec::new();
     let version = if scenario == Scenario::WrongVersion {
-        "Terraria325"
+        "Terraria326"
     } else {
         GREETING
     };

@@ -1,8 +1,8 @@
-# Direct TCP protocol, Terraria 1.4.5.8
+# Direct TCP protocol, Terraria 1.4.6
 
 ## Frame and field encodings
 
-`NetMessage.CheckBytes` (RVA 0x16c828) reads a little-endian u16 total length. Valid lengths span 3 through 65535. A u8 message ID follows, then exactly `length - 3` payload bytes. The prefix includes itself and the ID. A TCP read can contain part of a frame or several frames. The Rust transport bounds each payload by this prefix and reports EOF within a frame as an error.
+`NetMessage.CheckBytes` (RVA 0x15f2ec) reads a little-endian u16 total length. Valid lengths span 3 through 65535. A u8 message ID follows, then exactly `length - 3` payload bytes. The prefix includes itself and the ID. A TCP read can contain part of a frame or several frames. The Rust transport bounds each payload by this prefix and reports EOF within a frame as an error.
 
 Multibyte numbers are little-endian. A bool occupies one byte. The writer emits 0 or 1 and the reader accepts any nonzero byte as true. A string is a nonnegative .NET 7-bit encoded i32 UTF-8 **byte count** followed immediately by its bytes. Each prefix byte contributes seven bits, least significant group first, and bit 7 marks continuation. Rust rejects overflow, truncation, invalid UTF-8 and trailing fields. A Color here is R, G, B as three bytes.
 
@@ -14,7 +14,9 @@ Fields in each row appear in wire order. Directions describe the direct join seq
 
 | ID | Direction | Payload fields |
 | ---: | --- | --- |
-| 1 Hello | C → S | string greeting. This build sends `Terraria326`. |
+| 163 ServerInfo | S → C | Advertised port, world name, host, width, evil biome, difficulty, slot capacity, active players, note and optional mapped address. A world-backed server sends this on TCP connect. |
+| 164 PlayerPlatformInfo | C → S | Player slot, platform byte, ID string, display-name string when platform is 5 and host boolean. Direct-IP sessions consume this during character upload. |
+| 1 Hello | C → S | string greeting. This build sends `Terraria329`. |
 | 2 Kick | S → C | NetworkText reason. |
 | 3 PlayerInfo / assign slot | S → C | u8 player, bool special flag. The dedicated writer emits false. The client stores it as server special flag bit 2. |
 | 4 SyncPlayer | C → S | u8 player, u8 skin, u8 voice, f32 voice pitch offset, u8 hair, string name, u8 hair dye, u16 hidden accessory mask, u8 hidden misc mask, seven RGB colors (hair, skin, eyes, shirt, undershirt, pants, shoes), u8 difficulty/accessory flags, u8 torch/cart flags, u8 permanent-upgrade flags. |
@@ -51,12 +53,12 @@ For packet 4, difficulty flags at bits 0, 1, 2, 3 mean mediumcore, hardcore, ext
 
 ## Join and rejection
 
-1. At accept, the reference picks the lowest available slot below its limit. A full server immediately sends packet 2 with key `CLI.ServerIsFull`.
+1. At accept, the reference picks the lowest available slot below its limit. A full server immediately sends packet 2 with key `CLI.ServerIsFull`. When a world is loaded, the Rust listener starts an admitted connection with packet 163.
 2. In vanilla state 0, ID 1 must match the exact greeting. A version mismatch gets key `LegacyMultiplayer.4`. An open server returns ID 3. A protected server enters state -1 and sends ID 37.
 3. A matching ID 38 password yields ID 3 and state 1. A wrong password yields `LegacyMultiplayer.1`. Rust accepts ID 38 only while awaiting the password.
-4. After ID 3 the client emits 4, 68, 16, 42, 50, 147, repeated 5s for inventory and banks, optional 161, then 6. The connection determines player identity. The Rust session bounds equipment indices to 0–989 and applies the observed appearance and life limits. The name limit uses 20 UTF-16 code units after trimming. Game mode 3 accepts Journey characters. Other modes accept non-Journey characters.
+4. After ID 3 the client emits 4, 68, 16, 42, 50, 147, 164, repeated 5s for inventory and banks, optional 161, then 6. The connection determines player identity. The Rust session bounds equipment indices to 0–989 and applies the observed appearance and life limits. The name limit uses 20 UTF-16 code units after trimming. Game mode 3 accepts Journey characters. Other modes accept non-Journey characters.
 5. A configured world answers 6 with 7. Request 8 returns another 7, then status 9 and the sections surrounding the world spawn. A valid personal or team spawn can extend this area. The server visits section X first and then Y within each column, clips at the world edges and tracks sections sent on that connection.
-6. For each section the native server sends 10, then 155 and one 32 per slot for each chest. After the terrain, the banner full state, lunar shields and cavern monster types are sent. Packet 49 then invites the client to spawn. A named character sends 12, the roster registers the active player and the server sends 129. Request 159 can fetch additional sections during play. Join phases enforce packet direction and ordering. During play, the server discards unimplemented release-326 message IDs and net modules without applying their contents. This includes the creative powers module (6) sent by the stock client on entry. The server logs discarded IDs, checks the layouts of implemented messages and rejects invalid framing.
+6. For each section the native server sends 10, then 155 and one 32 per slot for each chest. After the terrain, the banner full state, lunar shields and cavern monster types are sent. Packet 49 then invites the client to spawn. A named character sends 12, the roster registers the active player and the server sends 129. Request 159 can fetch additional sections during play. Join phases enforce packet direction and ordering. During play, the server discards unimplemented release-329 message IDs and net modules without applying their contents. This includes the creative powers module (6) sent by the stock client on entry. The server logs discarded IDs, checks the layouts of implemented messages and rejects invalid framing.
 
 Character and packet limits come from `GetData`, `SendData`, `Player..cctor`, `PlayerItemSlotID..cctor`, `ItemID..cctor`, `PlayerVariantID..cctor` and `WriteAccessoryVisibility`. The signed wire slot in packet 5 is distinct from the server-assigned u8 player.
 
