@@ -1,4 +1,4 @@
 bind = "127.0.0.1:7777"
 max_players = 8
 password = ""
-# world = "/path/to/an/existing-1.4.5.8-world.wld"
+# world = "path/to/.wld"

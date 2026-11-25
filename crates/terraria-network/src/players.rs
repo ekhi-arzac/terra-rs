@@ -1,20 +1,29 @@
 //! The roster owner serializes membership and player updates. Socket writes never run on it.
 use crate::drops::Drops;
-use crate::terrain::LoadedWorld;
+use crate::terrain::{LoadedWorld, SectionSnapshot};
 use crate::trees;
 use crate::{Character, Error, read_frame, write_packet};
 use bytes::{Bytes, BytesMut};
-use std::{collections::BTreeMap, io, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    time::Duration,
+};
 use terraria_protocol::{Equipment, Error as ProtocolError, Movement, NetworkText, Packet};
 use tokio::{io::AsyncWriteExt, net::TcpStream, sync::mpsc, time::timeout};
+
+pub(super) enum Outbound {
+    Bytes(Bytes),
+    Section(SectionSnapshot),
+}
 
 pub(super) enum Event {
     Join {
         slot: u8,
         character: Box<Character>,
-        sent: std::collections::BTreeSet<[u16; 2]>,
+        sent: BTreeSet<[u16; 2]>,
         revision: u64,
-        out: mpsc::Sender<Bytes>,
+        out: mpsc::Sender<Outbound>,
     },
     Update {
         slot: u8,
@@ -25,17 +34,22 @@ pub(super) enum Event {
 
 struct Player {
     character: Box<Character>,
+    sections: BTreeSet<[u16; 2]>,
     chest: Option<i16>,
     movement: Option<Movement>,
     zones: Option<([u8; 5], u8)>,
-    out: Option<mpsc::Sender<Bytes>>,
+    out: Option<mpsc::Sender<Outbound>>,
 }
 impl Player {
     fn queue(&mut self, bytes: Bytes) {
+        self.enqueue(Outbound::Bytes(bytes));
+    }
+
+    fn enqueue(&mut self, outgoing: Outbound) {
         if self
             .out
             .as_ref()
-            .is_some_and(|out| out.try_send(bytes).is_err())
+            .is_some_and(|out| out.try_send(outgoing).is_err())
         {
             self.out = None;
         }
@@ -198,16 +212,30 @@ impl Roster {
         Ok(())
     }
     fn send(&mut self, except: Option<u8>, bytes: Bytes) {
-        // Closing a lagging receiver also terminates its socket. Leave is queued before slot reuse.
-        for (&slot, p) in &mut self.peers {
-            if Some(slot) != except
-                && p.out
-                    .as_ref()
-                    .is_some_and(|out| out.try_send(bytes.clone()).is_err())
-            {
-                p.out = None;
+        for (&slot, player) in &mut self.peers {
+            if Some(slot) != except {
+                player.queue(bytes.clone());
             }
         }
+    }
+    fn send_section_update(&mut self, section: [u16; 2], except: Option<u8>, bytes: Bytes) {
+        for (&slot, player) in &mut self.peers {
+            if Some(slot) != except && player.sections.contains(&section) {
+                player.queue(bytes.clone());
+            }
+        }
+    }
+    fn publish_tiles(
+        &mut self,
+        world: &LoadedWorld,
+        changes: &[([i16; 2], terraria_world::Tile)],
+    ) -> Result<(), ProtocolError> {
+        let patches = world.patches(changes)?;
+        world.commit_tiles(changes);
+        for (section, bytes) in patches {
+            self.send_section_update(section, None, bytes);
+        }
+        Ok(())
     }
     pub async fn run(mut self, mut input: mpsc::Receiver<Event>) {
         let mut tick = tokio::time::interval(Duration::from_millis(100));
@@ -231,23 +259,25 @@ impl Roster {
                 revision,
                 out,
             } => {
-                let player = Player {
+                let mut player = Player {
                     character,
+                    sections: sent,
                     chest: None,
                     movement: None,
                     zones: None,
-                    out: Some(out.clone()),
+                    out: Some(out),
                 };
                 let mut roster = BytesMut::new();
                 for (&id, peer) in &self.peers {
                     roster.extend_from_slice(&peer.snapshot(id)?);
                 }
                 if let Some(world) = &self.world {
-                    world.catch_up(revision, &sent, &mut roster)?;
+                    world.catch_up(revision, &player.sections, &mut roster)?;
                 }
                 self.drops.snapshot(&mut roster)?;
                 roster.extend_from_slice(&Packet::FinishedConnecting.encode()?);
-                if out.try_send(roster.freeze()).is_ok() {
+                player.queue(roster.freeze());
+                if player.out.is_some() {
                     self.send(None, player.snapshot(slot)?);
                     if let Some(spawn) = player.character.spawn {
                         self.send(None, Packet::Spawn(spawn).encode()?);
@@ -286,22 +316,73 @@ impl Roster {
                 let Some(peer) = self.peers.get_mut(&slot) else {
                     return Ok(());
                 };
+                if let Packet::TileChange { position, .. } | Packet::RequestChest(position) =
+                    &packet
+                    && !peer.sections.contains(&LoadedWorld::section_at(*position))
+                {
+                    return Ok(());
+                }
                 match packet {
+                    Packet::RequestSection(index) => {
+                        if let Some(world) = &self.world
+                            && world.contains(index)
+                            && !peer.sections.contains(&index)
+                        {
+                            peer.enqueue(Outbound::Section(world.section_snapshot(index)?));
+                            if peer.out.is_some() {
+                                peer.sections.insert(index);
+                            }
+                        }
+                    }
                     Packet::TileChange {
                         action,
                         position,
                         value,
                         ..
                     } => {
-                        let Some(world) = &self.world else {
+                        let Some(world) = self.world.clone() else {
                             return Ok(());
                         };
-                        if !matches!(action, 0 | 1 | 4 | 20) {
+                        if !matches!(action, 0 | 1 | 2 | 3 | 4 | 20) {
                             return Ok(());
                         }
                         let Some(tile) = world.tile(position) else {
                             return Ok(());
                         };
+                        if matches!(action, 2 | 3) {
+                            let wall = match action {
+                                2 if value == 1 || tile.wall == 0 => return Ok(()),
+                                2 if wall_item(tile.wall).is_some() => Some(0),
+                                3 if tile.wall == 0
+                                    && u16::try_from(value).ok().and_then(wall_item).is_some() =>
+                                {
+                                    Some(value as u16)
+                                }
+                                _ => None,
+                            };
+                            if let Some(wall) = wall {
+                                let updated = terraria_world::Tile {
+                                    wall,
+                                    wall_paint: 0,
+                                    flags: [
+                                        tile.flags[0],
+                                        tile.flags[1],
+                                        tile.flags[2],
+                                        tile.flags[3] & !0x14,
+                                    ],
+                                    ..tile
+                                };
+                                self.publish_tiles(&world, &[(position, updated)])?;
+                                if action == 2
+                                    && let Some(item) = wall_item(tile.wall)
+                                {
+                                    self.spawn_resource(slot, position, item, 1)?;
+                                }
+                            } else {
+                                peer.queue(LoadedWorld::tile_patch(position, tile)?);
+                            }
+                            return Ok(());
+                        }
                         let breaking = action != 1;
                         if breaking && value == 1 {
                             // Incomplete hits on grass-covered blocks can still strip the sod.
@@ -309,14 +390,11 @@ impl Roster {
                             if action == 20 {
                                 peer.queue(tile_break_result(position, tile.block.is_some())?);
                             } else if let Some(soil) = tile.block.and_then(soil_under_grass) {
-                                world.set_tile(
-                                    position,
-                                    terraria_world::Tile {
-                                        block: Some(soil),
-                                        ..tile
-                                    },
-                                );
-                                self.send(Some(slot), packet.encode()?);
+                                let updated = terraria_world::Tile {
+                                    block: Some(soil),
+                                    ..tile
+                                };
+                                self.publish_tiles(&world, &[(position, updated)])?;
                             }
                             return Ok(());
                         }
@@ -325,13 +403,16 @@ impl Roster {
                             return Ok(());
                         }
                         if breaking && trees::is_tree(tile) {
-                            let harvest = trees::harvest(world, position, tile);
-                            for &(pos, before) in &harvest.tiles {
-                                world.change_block(pos, before, None);
+                            let harvest = trees::harvest(&world, position, tile);
+                            let changes: Vec<_> = harvest
+                                .tiles
+                                .iter()
+                                .map(|&(pos, before)| (pos, LoadedWorld::with_block(before, None)))
+                                .collect();
+                            if action == 20 {
+                                peer.queue(tile_break_result(position, false)?);
                             }
-                            // The cutter applied the cut locally. Each peer only needs the
-                            // original operation to remove its attached branches and trunk.
-                            self.send((action != 20).then_some(slot), packet.encode()?);
+                            self.publish_tiles(&world, &changes)?;
                             if action != 4 {
                                 let mut remaining = harvest.tiles.len();
                                 while remaining > 0 {
@@ -363,11 +444,13 @@ impl Roster {
                             _ => None,
                         };
                         if let Some(block) = change {
-                            world.change_block(position, tile, block);
-                            self.send(
-                                if action == 20 { None } else { Some(slot) },
-                                packet.encode()?,
-                            );
+                            if action == 20 {
+                                peer.queue(tile_break_result(position, false)?);
+                            }
+                            self.publish_tiles(
+                                &world,
+                                &[(position, LoadedWorld::with_block(tile, block))],
+                            )?;
                             if block.is_none()
                                 && action != 4
                                 && let Some(item) = tile.block.and_then(resource)
@@ -404,12 +487,8 @@ impl Roster {
                             .encode()?,
                         );
                         let peer = self.peers.get_mut(&slot).unwrap();
-                        if peer
-                            .out
-                            .as_ref()
-                            .is_some_and(|out| out.try_send(batch.freeze()).is_err())
-                        {
-                            peer.out = None;
+                        peer.queue(batch.freeze());
+                        if peer.out.is_none() {
                             return Ok(());
                         }
                         peer.chest = Some(chest);
@@ -441,21 +520,20 @@ impl Roster {
                         prefix,
                         item,
                     } => {
-                        if peer.chest == Some(chest) {
-                            let bytes = packet.encode()?;
-                            if self.world.as_ref().is_some_and(|w| {
-                                w.edit_chest(
-                                    chest,
-                                    index,
-                                    terraria_world::ChestStack {
-                                        stack,
-                                        prefix,
-                                        item,
-                                    },
-                                )
-                            }) {
-                                self.send(Some(slot), bytes);
-                            }
+                        if peer.chest == Some(chest)
+                            && let Some(world) = &self.world
+                            && let Some(section) = world.chest_section(chest)
+                            && world.edit_chest(
+                                chest,
+                                index,
+                                terraria_world::ChestStack {
+                                    stack,
+                                    prefix,
+                                    item,
+                                },
+                            )
+                        {
+                            self.send_section_update(section, Some(slot), packet.encode()?);
                         }
                     }
                     Packet::DroppedItem(item) => {
@@ -463,11 +541,15 @@ impl Roster {
                             self.spawn_drop(slot, item)?;
                         } else if let Some(p) = self.drops.apply(slot, item) {
                             self.send(Some(slot), p.encode()?);
+                        } else {
+                            peer.queue(self.drops.correction(item.slot)?);
                         }
                     }
                     Packet::RemoveItem(index) => {
                         if let Some(p) = self.drops.remove(slot, index) {
                             self.send(Some(slot), p.encode()?);
+                        } else {
+                            peer.queue(self.drops.correction(index)?);
                         }
                     }
                     Packet::ReleaseItem { slot: index, force } => {
@@ -476,13 +558,7 @@ impl Roster {
                             self.refresh_owners()?;
                         }
                     }
-                    Packet::Ping => {
-                        if let Some(out) = &peer.out
-                            && out.try_send(Packet::Ping.encode()?).is_err()
-                        {
-                            peer.out = None;
-                        }
-                    }
+                    Packet::Ping => peer.queue(Packet::Ping.encode()?),
                     Packet::ChatCommand { text, .. } => {
                         let flags = peer
                             .character
@@ -570,6 +646,27 @@ fn is_ground_cover(block: u16) -> bool {
     )
 }
 
+fn wall_item(wall: u16) -> Option<i16> {
+    match wall {
+        1 => Some(26),
+        4 => Some(93),
+        5 => Some(130),
+        6 => Some(132),
+        16 => Some(30),
+        21 => Some(392),
+        34 => Some(608),
+        41 => Some(622),
+        42 => Some(623),
+        43 => Some(624),
+        85 => Some(927),
+        147 => Some(2433),
+        149 => Some(2505),
+        151 => Some(2506),
+        316 => Some(5216),
+        _ => None,
+    }
+}
+
 // Direct single-block drops from release 326 WorldGen.KillTile_GetItemDrops.
 fn resource(block: u16) -> Option<i16> {
     Some(match block {
@@ -588,14 +685,14 @@ fn resource(block: u16) -> Option<i16> {
 fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, ProtocolError> {
     if !matches!(
         frame.id,
-        5 | 13 | 16 | 17 | 21 | 31 | 32 | 33 | 36 | 39 | 42 | 50 | 82 | 147 | 151 | 154
+        5 | 13 | 16 | 17 | 21 | 31 | 32 | 33 | 36 | 39 | 42 | 50 | 82 | 147 | 151 | 154 | 159
     ) {
         return Err(ProtocolError::Unknown(frame.id));
     }
     let mut packet = Packet::decode_client(frame)?;
     match &mut packet {
         Packet::PlayerZones { player, .. } => *player = slot,
-        Packet::TileChange { .. } => {}
+        Packet::TileChange { .. } | Packet::RequestSection(_) => {}
         Packet::DroppedItem(i)
             if (0..=terraria_protocol::NEW_ITEM).contains(&i.slot)
                 && (0..6196).contains(&i.item)
@@ -637,22 +734,20 @@ pub(super) async fn play(
     character: Character,
     events: &mpsc::Sender<Event>,
     world: &std::sync::Arc<LoadedWorld>,
-    sent: std::collections::BTreeSet<[u16; 2]>,
+    sent: BTreeSet<[u16; 2]>,
     revision: u64,
 ) -> Result<(), Error> {
-    let (sender, mut pending) = mpsc::channel::<Bytes>(64);
+    let (sender, mut pending) = mpsc::channel::<Outbound>(64);
     events
         .send(Event::Join {
             slot,
             character: Box::new(character),
             out: sender,
-            sent: sent.clone(),
+            sent,
             revision,
         })
         .await
         .map_err(|_| io::Error::other("roster closed"))?;
-    let sent = std::sync::RwLock::new(sent);
-    let (section_tx, mut section_rx) = mpsc::channel(4);
     let (mut r, mut w) = stream.split();
     let read = async {
         let mut reported_ids = [false; 166];
@@ -668,15 +763,6 @@ pub(super) async fn play(
                     }
                     continue;
                 }
-            }
-            if frame.id == 159
-                && let Packet::RequestSection(index) = Packet::decode_client(&frame)?
-            {
-                section_tx
-                    .send(index)
-                    .await
-                    .map_err(|_| io::Error::other("terrain writer closed"))?;
-                continue;
             }
             let packet = match update(&frame, slot) {
                 Ok(p) => p,
@@ -695,14 +781,6 @@ pub(super) async fn play(
                     return Err(e.into());
                 }
             };
-            if let Packet::TileChange { position, .. } | Packet::RequestChest(position) = &packet
-                && !sent
-                    .read()
-                    .unwrap()
-                    .contains(&LoadedWorld::section_at(*position))
-            {
-                continue;
-            }
             events
                 .send(Event::Update { slot, packet })
                 .await
@@ -711,20 +789,17 @@ pub(super) async fn play(
         Ok::<_, Error>(())
     };
     let write = async {
-        loop {
-            tokio::select! {
-                next=pending.recv()=>{
-                    let Some(bytes)=next else{break};
-                    timeout(Duration::from_secs(10),w.write_all(&bytes)).await.map_err(io::Error::other)??;
+        while let Some(message) = pending.recv().await {
+            let write = async {
+                match message {
+                    Outbound::Bytes(bytes) => w.write_all(&bytes).await?,
+                    Outbound::Section(snapshot) => world.send_section(&mut w, snapshot).await?,
                 }
-                next=section_rx.recv()=>{
-                    let Some(index)=next else{break};
-                    if world.contains(index) && !sent.read().unwrap().contains(&index){
-                        timeout(Duration::from_secs(10),world.send_section(&mut w,index)).await.map_err(io::Error::other)??;
-                        sent.write().unwrap().insert(index);
-                    }
-                }
-            }
+                Ok::<_, Error>(())
+            };
+            timeout(Duration::from_secs(10), write)
+                .await
+                .map_err(io::Error::other)??;
         }
         Ok(())
     };

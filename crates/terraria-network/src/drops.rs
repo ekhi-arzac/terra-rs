@@ -1,5 +1,5 @@
 //! World item slots live for the lifetime of the simulation, independently of player slots.
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
@@ -53,6 +53,16 @@ impl Drops {
         }
         Ok(())
     }
+    pub fn correction(&self, slot: i16) -> Result<Bytes, Error> {
+        let Some(entry) = self.active.get(&slot) else {
+            return Packet::RemoveItem(slot).encode();
+        };
+        let mut bytes = BytesMut::new();
+        bytes.extend_from_slice(&Packet::DroppedItem(entry.item).encode()?);
+        bytes.extend_from_slice(&entry.owner(Instant::now()).encode()?);
+        Ok(bytes.freeze())
+    }
+
     pub fn apply(&mut self, player: u8, mut item: DroppedItem) -> Option<Packet> {
         let now = Instant::now();
         if item.slot == NEW_ITEM {

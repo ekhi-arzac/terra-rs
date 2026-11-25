@@ -14,12 +14,17 @@ cargo run -p terraria-world -- copy existing.wld output.wld
 From the repository root on Linux x86-64, start the bundled 1.4.5.8 dedicated server.
 
 ```sh
-mkdir -p "$PWD/worlds"
 chmod +x Linux/TerrariaServer.bin.x86_64
-./Linux/TerrariaServer.bin.x86_64 -worldpath "$PWD/worlds"
+./Linux/TerrariaServer.bin.x86_64
 ```
 
-Enter `n` in the world menu and follow the prompts. Select the generated world to start the official server, then enter `exit` in its console to save and stop it. For a world named Oak, set `world = "worlds/Oak.wld"` in your Rust server TOML and launch from the repository root.
+Enter `n` in the world menu and follow the prompts. Select the generated world to start the official server, then enter `exit` in its console to save and stop it. On Linux the default world directory is `~/.local/share/Terraria/Worlds`. List the actual filenames and their absolute paths with:
+
+```sh
+ls -1 "$HOME"/.local/share/Terraria/Worlds/*.wld
+```
+
+Set `world` in the Rust server TOML to the full path of the desired file, including its exact spelling and capitalization.
 
 ## Directory and metadata
 

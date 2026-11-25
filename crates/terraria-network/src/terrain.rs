@@ -23,6 +23,13 @@ pub(super) struct LoadedWorld {
     source: World,
     workers: Arc<Semaphore>,
     edits: RwLock<WorldEdits>,
+    chests_by_section: BTreeMap<[u16; 2], Vec<i16>>,
+}
+
+pub(super) struct SectionSnapshot {
+    index: [u16; 2],
+    tiles: Vec<([i16; 2], Tile)>,
+    chests: Bytes,
 }
 type ChangedTiles = BTreeMap<[i16; 2], (u64, Tile)>;
 
@@ -78,8 +85,21 @@ impl LoadedWorld {
                 .map_or(1, usize::from)
                 .min(4),
         ));
+        let mut chests_by_section = BTreeMap::<_, Vec<i16>>::new();
+        for (index, chest) in source.chests().iter().enumerate() {
+            let (x, y) = chest.position;
+            if (0..i32::from(data.size[0])).contains(&x)
+                && (0..i32::from(data.size[1])).contains(&y)
+            {
+                chests_by_section
+                    .entry(Self::section_at([x as i16, y as i16]))
+                    .or_default()
+                    .push(index as i16);
+            }
+        }
         Ok(Self {
             data,
+            chests_by_section,
             join_state: join_state.freeze(),
             edits: RwLock::default(),
             source,
@@ -104,25 +124,28 @@ impl LoadedWorld {
             .tile(u32::try_from(pos[0]).ok()?, u32::try_from(pos[1]).ok()?)
             .ok()
     }
-    pub fn change_block(&self, pos: [i16; 2], mut tile: Tile, block: Option<u16>) {
+    pub fn with_block(mut tile: Tile, block: Option<u16>) -> Tile {
         tile.block = block;
         tile.frame = None;
         tile.block_paint = 0;
         tile.flags[1] &= !0x70; // slope and half-brick
         tile.flags[2] &= !4; // inactive block
         tile.flags[3] &= !0x0a; // block invisibility and fullbright
-        self.set_tile(pos, tile);
+        tile
     }
-    pub fn set_tile(&self, pos: [i16; 2], tile: Tile) {
+    pub fn commit_tiles(&self, changes: &[([i16; 2], Tile)]) {
         let mut edits = self.edits.write().unwrap();
         edits.revision += 1;
         let rev = edits.revision;
-        edits
-            .tiles
-            .entry(Self::section_at(pos))
-            .or_default()
-            .insert(pos, (rev, tile));
+        for &(pos, tile) in changes {
+            edits
+                .tiles
+                .entry(Self::section_at(pos))
+                .or_default()
+                .insert(pos, (rev, tile));
+        }
     }
+
     pub fn tile_patch(pos: [i16; 2], tile: Tile) -> Result<Bytes, ProtocolError> {
         Packet::TilePatch(Box::new(TilePatch {
             origin: pos,
@@ -132,6 +155,61 @@ impl LoadedWorld {
         }))
         .encode()
     }
+
+    /// Fill the small rectangle around each part of the edit using the proposed tiles.
+    pub fn patches(
+        &self,
+        changes: &[([i16; 2], Tile)],
+    ) -> Result<Vec<([u16; 2], Bytes)>, ProtocolError> {
+        let changed: BTreeMap<_, _> = changes.iter().copied().collect();
+        let mut rectangles = BTreeMap::<_, ([i16; 2], [i16; 2])>::new();
+        for &(pos, _) in changes {
+            let (start, end) = rectangles
+                .entry(Self::section_at(pos))
+                .or_insert((pos, pos));
+            for axis in 0..2 {
+                start[axis] = start[axis].min(pos[axis]);
+                end[axis] = end[axis].max(pos[axis]);
+            }
+        }
+        let edits = self.edits.read().unwrap();
+        rectangles
+            .into_iter()
+            .map(|(index, (origin, end))| {
+                let size = [
+                    (end[0] - origin[0] + 1) as u8,
+                    (end[1] - origin[1] + 1) as u8,
+                ];
+                let mut tiles = Vec::with_capacity(usize::from(size[0]) * usize::from(size[1]));
+                let edited = edits.tiles.get(&index);
+                for x in origin[0]..=end[0] {
+                    for y in origin[1]..=end[1] {
+                        let tile = changed
+                            .get(&[x, y])
+                            .copied()
+                            .or_else(|| edited.and_then(|s| s.get(&[x, y])).map(|&(_, tile)| tile))
+                            .or_else(|| self.source.tile(x as u32, y as u32).ok())
+                            .ok_or(ProtocolError::Invalid("committed terrain coordinate"))?;
+                        tiles.push(section_tile(tile));
+                    }
+                }
+                let bytes = Packet::TilePatch(Box::new(TilePatch {
+                    origin,
+                    size,
+                    reason: 0,
+                    tiles,
+                }))
+                .encode()?;
+                Ok((index, bytes))
+            })
+            .collect()
+    }
+
+    pub fn chest_section(&self, chest: i16) -> Option<[u16; 2]> {
+        let (x, y) = self.source.chests().get(chest as usize)?.position;
+        Some(Self::section_at([x as i16, y as i16]))
+    }
+
     pub fn chest_at(&self, position: [i16; 2]) -> Option<i16> {
         self.source
             .chests()
@@ -186,12 +264,22 @@ impl LoadedWorld {
         true
     }
     pub fn chest_contents(&self, index: i16) -> Result<BytesMut, ProtocolError> {
+        let edits = self.edits.read().unwrap();
+        let mut batch = BytesMut::new();
+        self.write_chest(index, &edits, &mut batch)?;
+        Ok(batch)
+    }
+
+    fn write_chest(
+        &self,
+        index: i16,
+        edits: &WorldEdits,
+        batch: &mut BytesMut,
+    ) -> Result<(), ProtocolError> {
         let chest = &self.source.chests()[index as usize];
         if chest.capacity > 256 {
             return Err(ProtocolError::Invalid("chest capacity"));
         }
-        let edits = self.edits.read().unwrap();
-        let mut batch = BytesMut::new();
         batch.extend_from_slice(
             &Packet::ChestSize {
                 index,
@@ -219,45 +307,55 @@ impl LoadedWorld {
                 );
             }
         }
-        Ok(batch)
+        Ok(())
     }
     pub fn contains(&self, index: [u16; 2]) -> bool {
         u32::from(index[0]) * u32::from(SECTION_WIDTH) < self.source.metadata().width
             && u32::from(index[1]) * u32::from(SECTION_HEIGHT) < self.source.metadata().height
     }
+    pub fn section_snapshot(&self, index: [u16; 2]) -> Result<SectionSnapshot, ProtocolError> {
+        let edits = self.edits.read().unwrap();
+        let tiles = edits
+            .tiles
+            .get(&index)
+            .into_iter()
+            .flatten()
+            .map(|(&pos, &(_, tile))| (pos, tile))
+            .collect();
+        let mut chests = BytesMut::new();
+        for &chest in self.chests_by_section.get(&index).into_iter().flatten() {
+            self.write_chest(chest, &edits, &mut chests)?;
+        }
+        Ok(SectionSnapshot {
+            index,
+            tiles,
+            chests: chests.freeze(),
+        })
+    }
+
     pub async fn send_section<W: AsyncWrite + Unpin>(
         self: &Arc<Self>,
         out: &mut W,
-        index: [u16; 2],
+        snapshot: SectionSnapshot,
     ) -> Result<(), Error> {
         let permit = Arc::clone(&self.workers)
             .acquire_owned()
             .await
             .map_err(io::Error::other)?;
         let source = Arc::clone(self);
-        let (frame, mut indices) = tokio::task::spawn_blocking(move || {
+        let SectionSnapshot {
+            index,
+            tiles,
+            chests,
+        } = snapshot;
+        let frame = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let edits: Vec<_> = source
-                .edits
-                .read()
-                .unwrap()
-                .tiles
-                .get(&index)
-                .into_iter()
-                .flatten()
-                .map(|(&pos, &(_, tile))| (pos, tile))
-                .collect();
-            let section = source.source.section_with_edits(index, &edits)?;
-            let indices: Vec<_> = section.chests.iter().map(|c| c.index).collect();
-            Ok::<_, Error>((Packet::TileSection(Box::new(section)).encode()?, indices))
+            let section = source.source.section_with_edits(index, &tiles)?;
+            Ok::<_, Error>(Packet::TileSection(Box::new(section)).encode()?)
         })
         .await??;
         out.write_all(&frame).await?;
-        indices.sort_unstable();
-        for index in indices {
-            let batch = self.chest_contents(index)?;
-            out.write_all(&batch).await?;
-        }
+        out.write_all(&chests).await?;
         Ok(())
     }
     pub async fn transfer<W: AsyncWrite + Unpin>(
@@ -277,7 +375,8 @@ impl LoadedWorld {
         )
         .await?;
         for &index in &sections {
-            self.send_section(out, index).await?;
+            self.send_section(out, self.section_snapshot(index)?)
+                .await?;
         }
         out.write_all(&self.join_state).await?;
         write_packet(out, &Packet::SpawnAllowed).await?;
