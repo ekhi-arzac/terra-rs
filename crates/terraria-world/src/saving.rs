@@ -1,6 +1,11 @@
 use super::{Error, SECTION_COUNT, Tile, World};
 use bytes::{BufMut, BytesMut};
-use std::{collections::BTreeMap, io::Read, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs::{self, File},
+    io::{self, Read},
+    path::Path,
+};
 use terraria_binary::{Reader, tiles};
 
 #[derive(Clone, Copy, Debug)]
@@ -133,7 +138,21 @@ impl World {
         World::parse(out.to_vec())
     }
 
-    /// Keep the loaded image as a backup before publishing the edited image.
+    fn matches_file(&self, file: &mut File) -> io::Result<bool> {
+        if file.metadata()?.len() != self.data.len() as u64 {
+            return Ok(false);
+        }
+        let mut buf = [0; 16384];
+        for chunk in self.data.chunks(buf.len()) {
+            file.read_exact(&mut buf[..chunk.len()])?;
+            if &buf[..chunk.len()] != chunk {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Keep up to three preceding images before publishing a new world revision.
     pub fn publish_edits(&self, edited: &World, path: &Path) -> Result<(), Error> {
         let mut current = std::fs::OpenOptions::new()
             .read(true)
@@ -149,19 +168,34 @@ impl World {
                 return Err(Error::Invalid("world file replaced during save"));
             }
         }
-        if current.metadata()?.len() != self.data.len() as u64 {
-            return Err(Error::Invalid("world file changed since startup"));
-        }
-        let mut buf = [0; 16384];
-        for chunk in self.data.chunks(buf.len()) {
-            current.read_exact(&mut buf[..chunk.len()])?;
-            if &buf[..chunk.len()] != chunk {
-                return Err(Error::Invalid("world file changed since startup"));
-            }
+        if !self.matches_file(&mut current)? {
+            return Err(Error::Invalid(
+                "world file changed since the last load or save",
+            ));
         }
         let mut backup = path.as_os_str().to_owned();
         backup.push(".terra-rs.bak");
-        self.save(Path::new(&backup))?;
+        let backup = Path::new(&backup);
+        match File::open(backup) {
+            Ok(mut previous) => {
+                if self.matches_file(&mut previous)? {
+                    return edited.save(path);
+                }
+                drop(previous);
+                // Alternating slots retain the two preceding backups. A retry after
+                // publishing the backup recognizes the same bytes and skips rotation.
+                let mut older = backup.as_os_str().to_owned();
+                older.push(if self.meta.revision.is_multiple_of(2) {
+                    ".even"
+                } else {
+                    ".odd"
+                });
+                fs::rename(backup, older)?;
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+        self.save(backup)?;
         edited.save(path)
     }
 }

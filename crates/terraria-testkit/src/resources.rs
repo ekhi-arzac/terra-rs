@@ -978,3 +978,91 @@ mod furniture_tests {
         assert_eq!(saved.tile(2203, 231).unwrap().block, None);
     }
 }
+
+#[cfg(test)]
+mod save_tests {
+    use super::*;
+    use std::{num::NonZeroU32, time::Duration};
+    use terraria_network::{Administration, ConsoleCommand};
+    use terraria_world::World;
+    use tokio::{
+        net::TcpListener,
+        sync::mpsc,
+        time::{sleep, timeout},
+    };
+
+    async fn check_online_save(automatic: bool) -> Result<()> {
+        let world = World::parse(include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec())?;
+        let revision = world.metadata().revision;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("online.wld");
+        world.save(&path)?;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let addr = listener.local_addr()?;
+        let (send, commands) = mpsc::channel(4);
+        let server = tokio::spawn(terraria_network::serve_managed(
+            listener,
+            2.try_into()?,
+            String::new(),
+            Some(world),
+            Some(path.clone()),
+            Administration {
+                autosave_seconds: if automatic { NonZeroU32::new(1) } else { None },
+                commands,
+            },
+            std::future::pending(),
+        ));
+        let (mut socket, _, _, _) = join(addr, None).await?;
+        let place = |x, value| Packet::TileChange {
+            action: 1,
+            position: [x, 231],
+            value,
+            style: 0,
+        };
+        write_packet(&mut socket, &place(2099, 1)).await?;
+        observe_edit(&mut socket, &place(2099, 1)).await?;
+        if !automatic {
+            send.send(ConsoleCommand::Save).await?;
+        }
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let image = World::load(&path)?;
+                if image.metadata().revision == revision + 1 {
+                    assert_eq!(image.tile(2099, 231)?.block, Some(1));
+                    break;
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+        .await??;
+        let (mut b, _, _, _) = join(addr, None).await?;
+        write_packet(&mut b, &place(2100, 0)).await?;
+        observe_edit(&mut socket, &place(2100, 0)).await?;
+        send.send(ConsoleCommand::Exit).await?;
+        server.await??;
+        let final_world = World::load(path)?;
+        assert_eq!(final_world.metadata().revision, revision + 2);
+        assert_eq!(final_world.tile(2099, 231)?.block, Some(1));
+        assert_eq!(final_world.tile(2100, 231)?.block, Some(0));
+        let backup = World::load(dir.path().join("online.wld.terra-rs.bak"))?;
+        assert_eq!(backup.metadata().revision, revision + 1);
+        assert_eq!(backup.tile(2100, 231)?.block, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn manual_save_keeps_players_online_and_exit_flushes_later_edits() {
+        timeout(Duration::from_secs(10), check_online_save(false))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    #[tokio::test]
+    async fn periodic_save_keeps_players_online_and_exit_flushes_later_edits() {
+        timeout(Duration::from_secs(10), check_online_save(true))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+}

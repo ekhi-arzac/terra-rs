@@ -74,23 +74,45 @@ fn chest_item(chest: i16, slot: u8, value: ChestStack) -> Packet {
     }
 }
 
+/// Owned by the single disk writer. Readers continue using the original world and live edits.
+#[derive(Default)]
+pub(super) struct Checkpoint {
+    pub(super) revision: u64,
+    published: Option<World>,
+}
+
 impl LoadedWorld {
-    pub fn save_changes(&self, path: &std::path::Path) -> Result<(), Error> {
+    pub fn save_changes(
+        &self,
+        path: &std::path::Path,
+        checkpoint: &mut Checkpoint,
+    ) -> Result<bool, Error> {
         let edits = self.edits.read().unwrap();
-        if edits.revision == 0 {
-            return Ok(());
+        let revision = edits.revision;
+        if revision == checkpoint.revision {
+            return Ok(false);
         }
         let blocks = edits
             .tiles
             .values()
-            .flat_map(|s| s.iter().map(|(&pos, edit)| (pos, edit.tile)))
+            .flat_map(|s| s.iter())
+            .filter(|(_, edit)| edit.revision > checkpoint.revision)
+            .map(|(&pos, edit)| (pos, edit.tile))
             .collect();
-        let slots = edits.slots.iter().map(|(&key, &(_, v))| (key, v)).collect();
+        let slots = edits
+            .slots
+            .iter()
+            .filter(|(_, (rev, _))| *rev > checkpoint.revision)
+            .map(|(&key, &(_, v))| (key, v))
+            .collect();
         drop(edits);
-        let updated = self.source.with_edits(&blocks, &slots)?;
-        self.source.publish_edits(&updated, path)?;
+        let base = checkpoint.published.as_ref().unwrap_or(&self.source);
+        let updated = base.with_edits(&blocks, &slots)?;
+        base.publish_edits(&updated, path)?;
+        checkpoint.published = Some(updated);
+        checkpoint.revision = revision;
         tracing::info!(world=%path.display(), tiles=blocks.len(),chest_slots=slots.len(),"saved world changes");
-        Ok(())
+        Ok(true)
     }
 
     pub fn new(source: World) -> Result<Self, Error> {

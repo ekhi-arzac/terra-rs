@@ -129,3 +129,7 @@ The same two-player placement and break probe passed on the Rust server and the 
 ## Hinged doors
 
 Two headless players on disposable worlds exercised packet 79 placement at each of the three origin rows, right and left swings, closure from the outer column, a blocked swing, breaking an open door and removing a ceiling support. The Rust and official 1.4.6.1 servers both returned wood and rich-mahogany door items. The Rust regression also checks a swing across a section boundary, a player standing in the doorway, a contested support break, late entry and saved frames. Supported styles are wood, ebonwood, rich mahogany, pearlwood and shadewood. Trapdoors, tall gates and locked doors remain open work. Rust checks the last reported player hitboxes before closing and uses a fixed closed-door frame variation.
+
+## Online saves and administration
+
+Two loopback tests place a tile, wait for a manual or timed save while the client stays connected, join a second player and confirm that an edit made after the save reaches the first player. They exit through the console command channel and reload both the world and its previous backup. A separate persistence test performs six consecutive publications and verifies the three previous revision numbers on disk. These checks cover the Rust operator interface and world files.

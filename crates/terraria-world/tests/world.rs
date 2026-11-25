@@ -320,3 +320,38 @@ fn release_329_projects_the_optional_no_spiders_world_flag() {
         previous.section([10, 1]).unwrap()
     );
 }
+
+#[test]
+fn rolling_backups_retain_the_three_preceding_revisions() {
+    let mut base =
+        World::parse(include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("rolling.wld");
+    base.save(&path).unwrap();
+    for _ in 0..6 {
+        let next = base
+            .with_edits(&Default::default(), &Default::default())
+            .unwrap();
+        base.publish_edits(&next, &path).unwrap();
+        base = next;
+    }
+    let revision = base.metadata().revision;
+    assert_eq!(
+        World::load(dir.path().join("rolling.wld.terra-rs.bak"))
+            .unwrap()
+            .metadata()
+            .revision,
+        revision - 1
+    );
+    let mut older = ["even", "odd"].map(|suffix| {
+        World::load(
+            dir.path()
+                .join(format!("rolling.wld.terra-rs.bak.{suffix}")),
+        )
+        .unwrap()
+        .metadata()
+        .revision
+    });
+    older.sort();
+    assert_eq!(older, [revision - 3, revision - 2]);
+}

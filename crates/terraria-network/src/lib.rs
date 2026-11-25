@@ -1,4 +1,6 @@
 //! Bounded TCP transport and connection state for direct-IP clients.
+mod admin;
+pub use admin::{Administration, ConsoleCommand};
 mod doors;
 mod drops;
 mod players;
@@ -177,7 +179,7 @@ pub async fn serve(
     serve_with_save(listener, max_players, password, world, None, shutdown).await
 }
 
-/// Publish gameplay edits on orderly shutdown when the listener owns a disk-backed world.
+/// Serve with default periodic saves and a final checkpoint on shutdown.
 pub async fn serve_with_save(
     listener: TcpListener,
     max_players: NonZeroU8,
@@ -186,7 +188,38 @@ pub async fn serve_with_save(
     save_path: Option<std::path::PathBuf>,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), Error> {
+    serve_managed(
+        listener,
+        max_players,
+        password,
+        world,
+        save_path,
+        Administration::default(),
+        shutdown,
+    )
+    .await
+}
+
+/// Serve with a configurable save interval and optional local operator commands.
+pub async fn serve_managed(
+    listener: TcpListener,
+    max_players: NonZeroU8,
+    password: String,
+    world: Option<terraria_world::World>,
+    save_path: Option<std::path::PathBuf>,
+    mut admin: Administration,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), Error> {
     let world_info = world.map(LoadedWorld::new).transpose()?.map(Arc::new);
+    let (save_request, save_input) = mpsc::channel(1);
+    let save_worker = world_info.clone().zip(save_path).map(|(world, path)| {
+        tokio::spawn(admin::save_worker(
+            world,
+            path,
+            admin.autosave_seconds,
+            save_input,
+        ))
+    });
     let mut free: BTreeSet<u8> = (0..max_players.get()).collect();
     let password: Arc<str> = password.into();
     let mut tasks = JoinSet::new();
@@ -211,6 +244,16 @@ pub async fn serve_with_save(
         tokio::select! {
             biased;
             () = &mut shutdown => break,
+            Some(command) = admin.commands.recv() => match command {
+                ConsoleCommand::Exit => break,
+                ConsoleCommand::Save if save_worker.is_some() => {
+                    if let Err(mpsc::error::TrySendError::Closed(_)) = save_request.try_send(()) {
+                        tracing::error!("world save worker stopped");
+                    }
+                }
+                ConsoleCommand::Save => tracing::info!("no disk-backed world configured"),
+                ConsoleCommand::Playing => { let _ = events.send(Event::ListPlayers).await; }
+            },
             Some(done) = tasks.join_next(), if !tasks.is_empty() => { free.insert(done?); }
             accepted = listener.accept() => {
                 let (mut socket, peer) = accepted?;
@@ -242,8 +285,9 @@ pub async fn serve_with_save(
     tasks.shutdown().await;
     drop(events);
     roster.await?;
-    if let (Some(world), Some(path)) = (world_info, save_path) {
-        tokio::task::spawn_blocking(move || world.save_changes(&path)).await??;
+    drop(save_request);
+    if let Some(worker) = save_worker {
+        worker.await??;
     }
     Ok(())
 }

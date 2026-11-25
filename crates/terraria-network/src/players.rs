@@ -32,6 +32,7 @@ pub(super) enum Event {
         packet: Packet,
     },
     Leave(u8),
+    ListPlayers,
 }
 
 struct Player {
@@ -406,6 +407,14 @@ impl Roster {
                     self.player_count
                         .store(self.peers.len() as u8, std::sync::atomic::Ordering::Relaxed);
                 }
+            }
+            Event::ListPlayers => {
+                let names: Vec<_> = self
+                    .peers
+                    .values()
+                    .filter_map(|peer| peer.character.appearance.as_ref().map(|a| a.name.as_str()))
+                    .collect();
+                tracing::info!(players = ?names, count = names.len(), "connected players");
             }
             Event::Leave(slot) => {
                 if let Some(player) = self.peers.remove(&slot) {
