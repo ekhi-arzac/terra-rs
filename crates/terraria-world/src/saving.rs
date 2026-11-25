@@ -31,7 +31,7 @@ impl World {
         slots: &BTreeMap<(i16, u8), ChestStack>,
         names: &BTreeMap<i16, String>,
     ) -> Result<World, Error> {
-        self.with_changes(blocks, slots, names, &BTreeMap::new())
+        self.with_changes(blocks, slots, names, &BTreeMap::new(), None)
     }
 
     /// Container positions survive file compaction; network slot numbers are session-local.
@@ -40,7 +40,22 @@ impl World {
         blocks: &BTreeMap<[i16; 2], Tile>,
         containers: &BTreeMap<(i32, i32), Option<Chest>>,
     ) -> Result<World, Error> {
-        self.with_changes(blocks, &BTreeMap::new(), &BTreeMap::new(), containers)
+        self.with_changes(blocks, &BTreeMap::new(), &BTreeMap::new(), containers, None)
+    }
+
+    pub fn checkpoint(
+        &self,
+        blocks: &BTreeMap<[i16; 2], Tile>,
+        containers: &BTreeMap<(i32, i32), Option<Chest>>,
+        clock: crate::WorldClock,
+    ) -> Result<World, Error> {
+        self.with_changes(
+            blocks,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            containers,
+            Some(clock),
+        )
     }
 
     fn with_changes(
@@ -49,6 +64,7 @@ impl World {
         slots: &BTreeMap<(i16, u8), ChestStack>,
         names: &BTreeMap<i16, String>,
         containers: &BTreeMap<(i32, i32), Option<Chest>>,
+        clock: Option<crate::WorldClock>,
     ) -> Result<World, Error> {
         if names.iter().any(|(&index, name)| {
             self.chests.get(index as usize).is_none() || name.encode_utf16().count() > 20
@@ -56,6 +72,12 @@ impl World {
             return Err(Error::Invalid("chest rename"));
         }
         let mut out = BytesMut::from(&self.data[..self.offsets[1]]);
+        if let Some(clock) = clock {
+            if !clock.time.is_finite() {
+                return Err(Error::Invalid("non-finite world time"));
+            }
+            self.join_state()?.clock_offsets.write(&mut out, clock);
+        }
         let mut offsets = self.offsets;
         for (x, column) in self.columns.windows(2).enumerate() {
             let raw = &self.data[column[0]..column[1]];

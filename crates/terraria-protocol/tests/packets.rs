@@ -57,6 +57,22 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
         ),
         (Packet::Appearance(a), 4, appearance),
         (
+            Packet::UseTimeDial {
+                player: 2,
+                dusk: false,
+            },
+            51,
+            vec![2, 3],
+        ),
+        (
+            Packet::UseTimeDial {
+                player: 3,
+                dusk: true,
+            },
+            51,
+            vec![3, 6],
+        ),
+        (
             Packet::Equipment(Equipment {
                 player: 3,
                 slot: 989,

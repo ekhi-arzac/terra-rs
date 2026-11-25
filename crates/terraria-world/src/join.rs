@@ -20,6 +20,7 @@ fn count(value: i32) -> Result<usize, Error> {
 
 pub struct JoinState {
     pub info: WorldData,
+    pub(crate) clock_offsets: crate::clock::ClockOffsets,
     pub banners: terraria_protocol::BannerState,
     pub shields: [u16; 4],
     pub cavern_monsters: [u16; 6],
@@ -52,6 +53,7 @@ impl World {
         let biome_backgrounds = r.i32s::<3>()?.map(|v| v as u8);
         let spawn = r.i32s::<2>()?.map(|v| v as i16);
         let layers = [r.f64()? as i16, r.f64()? as i16];
+        let clock_start = self.flags.end - r.0.len();
         let time = r.f64()? as i32;
         let [day] = bools(&mut r)?;
         let moon_phase = r.i32()? as u8;
@@ -79,6 +81,7 @@ impl World {
         let invasion = r.i32()? as i8;
         r.f64()?; // Invasion X.
         let slime_rain_time = r.f64()?;
+        let sundial_offset = self.flags.end - r.0.len();
         let sundial = r.byte()?;
         let [raining] = bools(&mut r)?;
         r.i32()?; // Rain duration.
@@ -117,6 +120,7 @@ impl World {
                 *entry = n;
             }
         }
+        let dawn_offset = self.flags.end - r.0.len();
         let [
             dawn,
             fishron,
@@ -186,6 +190,7 @@ impl World {
             copper,
             dusk,
         ] = bools(&mut r)?;
+        let moondial_offset = self.flags.end - r.0.len();
         let moondial = r.byte()?;
         let [permanent_halloween, permanent_xmas, vampire, infected] = bools(&mut r)?;
         r.take::<8>()?; // Meteor shower and coin rain counters.
@@ -312,6 +317,12 @@ impl World {
             }
         });
         Ok(JoinState {
+            clock_offsets: crate::clock::ClockOffsets {
+                time: clock_start,
+                sundial: sundial_offset,
+                dawn: dawn_offset,
+                moondial: moondial_offset,
+            },
             info,
             banners,
             shields,

@@ -126,12 +126,15 @@ async fn connection(
                 _ => None,
             };
             let phase = *session.phase();
-            if let Some(response) = session.handle(packet, password) {
+            if let Some(mut response) = session.handle(packet, password) {
                 if session.phase() == &Phase::Closed {
                     tracing::warn!(slot, packet_id = frame.id, ?phase, "join rejected");
                 }
                 if session.phase() == &Phase::Active {
                     break;
+                }
+                if let (Some(world), Packet::WorldData(info)) = (world, &mut response) {
+                    revision = world.current_time(info);
                 }
                 write_packet(&mut stream, &response).await?;
             }
@@ -139,7 +142,6 @@ async fn connection(
                 && session.phase() == &Phase::SendingSections
                 && let Some(world) = world
             {
-                revision = world.revision();
                 sent = world.transfer(&mut stream, spawn, team).await?;
                 session.phase = Phase::AwaitSpawn;
             }

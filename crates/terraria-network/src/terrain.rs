@@ -19,6 +19,7 @@ use tokio::{
 
 pub(super) struct LoadedWorld {
     pub data: WorldData,
+    time_rate: u32,
     pub residents: Vec<crate::residents::Resident>,
     join_state: bytes::Bytes,
     source: World,
@@ -60,6 +61,8 @@ struct TileEdit {
 
 #[derive(Default)]
 struct WorldEdits {
+    clock: terraria_world::WorldClock,
+    phase_revision: u64,
     tiles: BTreeMap<[u16; 2], BTreeMap<[i16; 2], TileEdit>>,
     revision: u64,
     containers: crate::containers::Containers,
@@ -91,9 +94,10 @@ impl LoadedWorld {
             .map(|(&pos, edit)| (pos, edit.tile))
             .collect();
         let containers = edits.containers.changes(checkpoint.revision);
+        let clock = edits.clock;
         drop(edits);
         let base = checkpoint.published.as_ref().unwrap_or(&self.source);
-        let updated = base.with_containers(&blocks, &containers)?;
+        let updated = base.checkpoint(&blocks, &containers, clock)?;
         base.publish_edits(&updated, path)?;
         checkpoint.published = Some(updated);
         checkpoint.revision = revision;
@@ -104,6 +108,8 @@ impl LoadedWorld {
     pub fn new(source: World) -> Result<Self, Error> {
         let state = source.join_state()?;
         let data = state.info;
+        let time_rate = source.saved_time_rate()?;
+        let clock = terraria_world::WorldClock::from_world(source.metadata().time, &data);
         let mut join_state = bytes::BytesMut::new();
         let residents = crate::residents::Resident::load(&source)?;
         for resident in &residents {
@@ -131,15 +137,49 @@ impl LoadedWorld {
         let containers = crate::containers::Containers::load(&source);
         Ok(Self {
             data,
+            time_rate,
             residents,
             join_state: join_state.freeze(),
             edits: RwLock::new(WorldEdits {
                 containers,
+                clock,
                 ..Default::default()
             }),
             source,
             workers,
         })
+    }
+    pub fn current_time(&self, info: &mut WorldData) -> u64 {
+        let edits = self.edits.read().unwrap();
+        edits.clock.apply(info);
+        edits.revision
+    }
+    pub fn advance_time(&self) -> Option<Packet> {
+        let mut edits = self.edits.write().unwrap();
+        let previous = edits.clock;
+        let transition = edits.clock.tick(self.time_rate);
+        if edits.clock == previous {
+            return None;
+        }
+        edits.revision += 1;
+        if !transition {
+            return None;
+        }
+        Some(self.clock_update(&mut edits))
+    }
+    pub fn activate_dial(&self, dusk: bool) -> Option<Packet> {
+        let mut edits = self.edits.write().unwrap();
+        if !edits.clock.activate_dial(dusk) {
+            return None;
+        }
+        edits.revision += 1;
+        Some(self.clock_update(&mut edits))
+    }
+    fn clock_update(&self, edits: &mut WorldEdits) -> Packet {
+        edits.phase_revision = edits.revision;
+        let mut data = self.data.clone();
+        edits.clock.apply(&mut data);
+        Packet::WorldData(Box::new(data))
     }
     pub fn section_at([x, y]: [i16; 2]) -> [u16; 2] {
         [x as u16 / SECTION_WIDTH, y as u16 / SECTION_HEIGHT]
@@ -343,6 +383,11 @@ impl LoadedWorld {
         let edits = self.edits.read().unwrap();
         if since == edits.revision {
             return Ok(());
+        }
+        if edits.phase_revision > since {
+            let mut data = self.data.clone();
+            edits.clock.apply(&mut data);
+            out.extend_from_slice(&Packet::WorldData(Box::new(data)).encode()?);
         }
         edits.containers.removed_since(since, sent, out)?;
         let mut footprints = BTreeSet::new();

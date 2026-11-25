@@ -1,5 +1,7 @@
 //! Lossless inspection of the sectioned world format written by releases 326 through 329.
 mod cavern;
+mod clock;
+pub use clock::WorldClock;
 mod npcs;
 pub use npcs::{Npc, TownNpc};
 mod join;
@@ -292,6 +294,9 @@ fn metadata(
     let surface = f64::from_le_bytes(r.take()?);
     let rock_layer = f64::from_le_bytes(r.take()?);
     let time = f64::from_le_bytes(r.take()?);
+    if !time.is_finite() {
+        return Err(Error::Invalid("non-finite world time"));
+    }
     let daytime = r.byte()? != 0;
     Ok((
         Metadata {

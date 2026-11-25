@@ -123,6 +123,10 @@ pub enum Packet {
         buffs: Vec<(u16, u16)>,
     },
     RequestNpcName(i16),
+    UseTimeDial {
+        player: u8,
+        dusk: bool,
+    },
     NpcName {
         slot: i16,
         name: String,
@@ -228,6 +232,7 @@ impl Packet {
             Self::NpcSync(_) => 23,
             Self::NpcBuffs { .. } => 54,
             Self::RequestNpcName(_) | Self::NpcName { .. } => 56,
+            Self::UseTimeDial { .. } => 51,
             Self::NpcHome { .. } => 60,
             Self::RequestChest(_) => 31,
             Self::ChestUpdate { .. } => 34,
@@ -422,6 +427,14 @@ impl Packet {
                 }
                 Self::NpcBuffs { slot, buffs }
             }
+            51 => Self::UseTimeDial {
+                player: r.byte()?,
+                dusk: match r.byte()? {
+                    3 => false,
+                    6 => true,
+                    _ => return Err(Error::Invalid("unsupported miscellaneous event")),
+                },
+            },
             56 if from_client => Self::RequestNpcName(r.i16()?),
             56 => Self::NpcName {
                 slot: r.i16()?,
@@ -614,6 +627,10 @@ impl Packet {
                 out.put_u16_le(0);
             }
             Self::RequestNpcName(slot) => out.put_i16_le(*slot),
+            Self::UseTimeDial { player, dusk } => {
+                out.put_u8(*player);
+                out.put_u8(if *dusk { 6 } else { 3 });
+            }
             Self::NpcName {
                 slot,
                 name,

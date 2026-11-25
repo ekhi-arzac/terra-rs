@@ -484,17 +484,38 @@ impl Roster {
     }
 
     pub async fn run(mut self, mut input: mpsc::Receiver<Event>) {
-        let mut tick = tokio::time::interval(Duration::from_millis(100));
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let period = Duration::from_nanos(16_666_667);
+        let mut simulation = tokio::time::interval(period);
+        let mut ownership = tokio::time::interval(Duration::from_millis(100));
+        ownership.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             let result = tokio::select! {
-                event = input.recv() => match event { Some(e) => self.handle(e), None => break },
-                _ = tick.tick(), if !self.drops.is_empty() => self.refresh_owners(),
+                event = input.recv() => match event {
+                    Some(e) => {
+                        let idle = self.peers.is_empty();
+                        let result = self.handle(e);
+                        if idle && !self.peers.is_empty() {
+                            simulation.reset();
+                        }
+                        result
+                    },
+                    None => break
+                },
+                _ = ownership.tick(), if !self.drops.is_empty() => self.refresh_owners(),
+                _ = simulation.tick(), if !self.peers.is_empty() => self.simulate_tick(),
             };
             if let Err(error) = result {
                 tracing::debug!(%error,"could not serialize player update");
             }
         }
+    }
+    fn simulate_tick(&mut self) -> Result<(), ProtocolError> {
+        if let Some(world) = &self.world
+            && let Some(update) = world.advance_time()
+        {
+            self.send(None, update.encode()?);
+        }
+        Ok(())
     }
     fn handle(&mut self, event: Event) -> Result<(), ProtocolError> {
         match event {
@@ -586,6 +607,13 @@ impl Roster {
                     return Ok(());
                 }
                 match packet {
+                    Packet::UseTimeDial { dusk, .. } => {
+                        if let Some(update) =
+                            self.world.as_ref().and_then(|w| w.activate_dial(dusk))
+                        {
+                            self.send(None, update.encode()?);
+                        }
+                    }
                     Packet::RequestSection(index) => {
                         if let Some(world) = &self.world
                             && world.contains(index)
@@ -1102,6 +1130,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 39
             | 42
             | 50
+            | 51
             | 56
             | 69
             | 79
@@ -1115,7 +1144,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
     }
     let mut packet = Packet::decode_client(frame)?;
     match &mut packet {
-        Packet::PlayerZones { player, .. } => *player = slot,
+        Packet::PlayerZones { player, .. } | Packet::UseTimeDial { player, .. } => *player = slot,
         Packet::TileChange { .. }
         | Packet::ObjectPlacement { .. }
         | Packet::DoorToggle { .. }

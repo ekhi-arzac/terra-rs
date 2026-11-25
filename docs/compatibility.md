@@ -145,3 +145,18 @@ cargo run -p terraria-testkit -- compare 127.0.0.1:1242 127.0.0.1:1240 town
 The installed 1.4.6.1 server and Rust matched all 116 observations from an official save containing 29 residents. Each slot matched on its initial NPC state, buffs, name and variation, and housing. The probe groups duplicate section and spawn announcements by slot. A loopback regression checks the saved Guide and Old Man on two successive joins. An additional fixture with an invalid house assigned in open terrain exposed a difference. The official server marked the occupant homeless while Rust reported the saved room assignment. Live room validation, relocation, town AI, spawning and combat remain pending.
 
 The two-player resource probe also renames an open chest on close, observes the name from another socket, looks it up by position and checks the next join’s section metadata. The sequence passed on Rust and the official 1.4.6.1 server. The Rust loopback test reloads the name and stack from the saved world.
+
+
+## Wooden chest placement and recovery
+
+On the installed official 1.4.6.1 server and Rust, a newly placed regular wooden chest exposed 40 slots, protected its supports and returned item 48 on empty removal. The Rust loopback regression interleaves two players, removal, slot reuse and an online save. It reloads the remaining chest by position and checks its contents after the file compacts the chest list.
+
+## World clock and enchanted dials
+
+Two headless players observed natural dawn and dusk on the installed official 1.4.6.1 server and Rust. Both received tick zero at each transition. Phase 7 wrapped to 0 at dawn and stayed 7 at dusk. The clock probe also activated the sundial and moondial in separate runs on both servers. Both sockets observed cooldown 8 on use, cooldown 7 on transition, and a later join saw the updated phase and cooldown. To repeat, start each server on a separate disposable world saved shortly before the boundary, with the corresponding dial ready.
+
+```sh
+cargo run -p terraria-testkit -- clock 127.0.0.1:1240
+```
+
+Rust tests also cover the idle clock, save/reload, fractional time, frozen time, saved time speeds and fast-forward precedence. Sleep acceleration, live Journey power changes, random moon events, weather and special-seed side effects remain pending.
