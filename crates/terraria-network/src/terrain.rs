@@ -31,6 +31,7 @@ pub(super) struct SectionSnapshot {
     index: [u16; 2],
     tiles: Vec<([i16; 2], Tile)>,
     chests: Bytes,
+    names: BTreeMap<i16, String>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct TileBounds {
@@ -63,6 +64,7 @@ struct WorldEdits {
     tiles: BTreeMap<[u16; 2], BTreeMap<[i16; 2], TileEdit>>,
     revision: u64,
     slots: BTreeMap<(i16, u8), (u64, ChestStack)>,
+    names: BTreeMap<i16, (u64, String)>,
 }
 
 fn chest_item(chest: i16, slot: u8, value: ChestStack) -> Packet {
@@ -106,9 +108,15 @@ impl LoadedWorld {
             .filter(|(_, (rev, _))| *rev > checkpoint.revision)
             .map(|(&key, &(_, v))| (key, v))
             .collect();
+        let names = edits
+            .names
+            .iter()
+            .filter(|(_, (rev, _))| *rev > checkpoint.revision)
+            .map(|(&index, (_, name))| (index, name.clone()))
+            .collect();
         drop(edits);
         let base = checkpoint.published.as_ref().unwrap_or(&self.source);
-        let updated = base.with_edits(&blocks, &slots)?;
+        let updated = base.with_chest_names(&blocks, &slots, &names)?;
         base.publish_edits(&updated, path)?;
         checkpoint.published = Some(updated);
         checkpoint.revision = revision;
@@ -322,6 +330,33 @@ impl LoadedWorld {
             .position(|c| c.position == (position[0].into(), position[1].into()))
             .map(|i| i as i16)
     }
+    fn name_packet(&self, index: i16, name: &str) -> Option<Packet> {
+        let (x, y) = self.source.chests().get(index as usize)?.position;
+        Some(Packet::ChestName {
+            chest: index,
+            position: [x as i16, y as i16],
+            name: name.to_owned(),
+        })
+    }
+    pub fn chest_name(&self, index: i16) -> Option<Packet> {
+        let chest = self.source.chests().get(index as usize)?;
+        let edits = self.edits.read().unwrap();
+        self.name_packet(
+            index,
+            edits
+                .names
+                .get(&index)
+                .map_or(chest.name.as_str(), |(_, n)| n),
+        )
+    }
+    pub fn rename_chest(&self, index: i16, name: String) -> Option<Packet> {
+        let update = self.name_packet(index, &name)?;
+        let mut edits = self.edits.write().unwrap();
+        edits.revision += 1;
+        let rev = edits.revision;
+        edits.names.insert(index, (rev, name));
+        Some(update)
+    }
     pub fn revision(&self) -> u64 {
         self.edits.read().unwrap().revision
     }
@@ -351,6 +386,16 @@ impl LoadedWorld {
         }
         for bounds in footprints {
             out.extend_from_slice(&self.encode_rectangle(bounds, &edits, &BTreeMap::new())?);
+        }
+        for (&index, (rev, name)) in &edits.names {
+            if *rev > since
+                && self
+                    .chest_section(index)
+                    .is_some_and(|section| sent.contains(&section))
+                && let Some(packet) = self.name_packet(index, name)
+            {
+                out.extend_from_slice(&packet.encode()?);
+            }
         }
         for (&(index, slot), (rev, value)) in &edits.slots {
             let (x, y) = self.source.chests()[index as usize].position;
@@ -436,13 +481,18 @@ impl LoadedWorld {
             .map(|(&pos, edit)| (pos, edit.tile))
             .collect();
         let mut chests = BytesMut::new();
+        let mut names = BTreeMap::new();
         for &chest in self.chests_by_section.get(&index).into_iter().flatten() {
             self.write_chest(chest, &edits, &mut chests)?;
+            if let Some((_, name)) = edits.names.get(&chest) {
+                names.insert(chest, name.clone());
+            }
         }
         Ok(SectionSnapshot {
             index,
             tiles,
             chests: chests.freeze(),
+            names,
         })
     }
 
@@ -460,10 +510,16 @@ impl LoadedWorld {
             index,
             tiles,
             chests,
+            names,
         } = snapshot;
         let frame = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let section = source.source.section_with_edits(index, &tiles)?;
+            let mut section = source.source.section_with_edits(index, &tiles)?;
+            for chest in &mut section.chests {
+                if let Some(name) = names.get(&chest.index) {
+                    chest.text.clone_from(name);
+                }
+            }
             Ok::<_, Error>(Packet::TileSection(Box::new(section)).encode()?)
         })
         .await??;

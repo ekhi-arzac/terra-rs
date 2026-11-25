@@ -134,6 +134,15 @@ pub enum Packet {
         state: u8,
     },
     RequestChest([i16; 2]),
+    RequestChestName {
+        chest: i16,
+        position: [i16; 2],
+    },
+    ChestName {
+        chest: i16,
+        position: [i16; 2],
+        name: String,
+    },
     ChestState {
         chest: i16,
         position: [i16; 2],
@@ -215,6 +224,7 @@ impl Packet {
             Self::RequestNpcName(_) | Self::NpcName { .. } => 56,
             Self::NpcHome { .. } => 60,
             Self::RequestChest(_) => 31,
+            Self::RequestChestName { .. } | Self::ChestName { .. } => 69,
             Self::ChestState { .. } => 33,
             Self::PlayerChest { .. } => 80,
             Self::ChestSize { .. } => 155,
@@ -351,13 +361,36 @@ impl Packet {
                 let name = match r.byte()? {
                     0 => None,
                     255 => Some(String::new()),
-                    1..=20 => Some(r.string()?.to_owned()),
+                    length @ 1..=20 => {
+                        let name = r.string()?;
+                        if name.encode_utf16().count() != usize::from(length) {
+                            return Err(Error::Invalid("chest name length"));
+                        }
+                        Some(name.to_owned())
+                    }
                     _ => return Err(Error::Invalid("chest name length")),
                 };
                 Self::ChestState {
                     chest,
                     position,
                     name,
+                }
+            }
+            69 => {
+                let chest = r.i16()?;
+                let position = r.i16s()?;
+                if from_client {
+                    // The stock serializer may append its cached name. Requests only look it up.
+                    if !r.0.is_empty() {
+                        r.string()?;
+                    }
+                    Self::RequestChestName { chest, position }
+                } else {
+                    Self::ChestName {
+                        chest,
+                        position,
+                        name: r.string()?.to_owned(),
+                    }
                 }
             }
             23 if !from_client => Self::NpcSync(crate::NpcSync::read(&mut r)?),
@@ -529,6 +562,18 @@ impl Packet {
                 out.put_i32_le(*count);
                 text.write(&mut out, 0)?;
                 out.put_u8(*flags);
+            }
+            Self::RequestChestName { chest, position }
+            | Self::ChestName {
+                chest, position, ..
+            } => {
+                out.put_i16_le(*chest);
+                for c in position {
+                    out.put_i16_le(*c);
+                }
+                if let Self::ChestName { name, .. } = self {
+                    put_string(&mut out, name)?;
+                }
             }
             Self::NpcSync(npc) => npc.write(&mut out)?,
             Self::NpcBuffs { slot, buffs } => {

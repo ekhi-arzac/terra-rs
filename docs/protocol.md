@@ -89,7 +89,8 @@ Three lists follow the last tile. An i16 count precedes each list. A chest or si
 | 22 | i16 world slot, owner byte, 7-bit reservation time, delayed player byte, 7-bit delay time, two f32 position components. Player 255 represents an unowned stack. |
 | 39, 151 | Release the reserved slot (i16 slot and boolean), or remove the picked-up stack (i16 slot). The connection must own the stack to change or remove it. A rejected change or removal restores the current stack and reservation on the requesting socket. |
 | 31, 155, 32 | Request a chest by two i16 tile coordinates. The server replies with capacity and all slots. The current user can update a slot with its stack, prefix and type. |
-| 33, 80 | Chest open/close uses i16 chest index, two i16 coordinates and a name marker with an optional string. Index −1 closes the chest. ID 80 announces the player's slot and current chest index to peers. Chest renaming remains pending. |
+| 33, 80 | Chest open/close uses i16 chest index, two i16 coordinates and a name marker with an optional string. Index −1 closes the chest. ID 80 announces the player's slot and current chest index to peers. The name marker counts UTF-16 code units up to 20. A marker of 255 clears the name. The open chest on the sending connection owns the rename. |
+| 69 | Three i16 fields identify the chest index and its tile coordinates. Clients can use index −1 for lookup by coordinates. A server reply also carries the .NET name string. A stock client request may include a cached name. |
 
 ## Town NPCs on release 329
 

@@ -453,6 +453,7 @@ impl Roster {
                 if let Packet::TileChange { position, .. }
                 | Packet::ObjectPlacement { position, .. }
                 | Packet::DoorToggle { position, .. }
+                | Packet::RequestChestName { position, .. }
                 | Packet::RequestChest(position) = &packet
                     && !peer.sections.contains(&LoadedWorld::section_at(*position))
                 {
@@ -735,8 +736,27 @@ impl Roster {
                             .encode()?,
                         );
                     }
-                    Packet::ChestState { chest, .. } => {
-                        if chest < 0 && peer.chest.take().is_some() {
+                    Packet::RequestChestName { chest, position } => {
+                        if let Some(world) = &self.world
+                            && let Some(index) = world.chest_at(position)
+                            && (chest == -1 || chest == index)
+                            && let Some(packet) = world.chest_name(index)
+                        {
+                            peer.queue(packet.encode()?);
+                        }
+                    }
+                    Packet::ChestState { chest, name, .. } => {
+                        let previous = peer.chest;
+                        let closed = chest < 0 && peer.chest.take().is_some();
+                        if let Some(name) = name
+                            && let Some(index) = previous
+                            && let Some(world) = &self.world
+                            && let Some(section) = world.chest_section(index)
+                            && let Some(packet) = world.rename_chest(index, name)
+                        {
+                            self.send_section_update(section, Some(slot), packet.encode()?);
+                        }
+                        if closed {
                             self.send(
                                 Some(slot),
                                 Packet::PlayerChest {
@@ -924,6 +944,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 42
             | 50
             | 56
+            | 69
             | 79
             | 82
             | 147
@@ -946,7 +967,10 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
                 && i.stack >= 0 => {}
         Packet::ReleaseItem { slot: index, .. } | Packet::RemoveItem(index)
             if (0..terraria_protocol::NEW_ITEM).contains(index) => {}
-        Packet::RequestNpcName(_) | Packet::RequestChest(_) | Packet::ChestState { .. } => {}
+        Packet::RequestChestName { .. }
+        | Packet::RequestNpcName(_)
+        | Packet::RequestChest(_)
+        | Packet::ChestState { .. } => {}
         Packet::ChestItem {
             stack,
             item,

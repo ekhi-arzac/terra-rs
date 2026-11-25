@@ -22,6 +22,20 @@ impl World {
         blocks: &BTreeMap<[i16; 2], Tile>,
         slots: &BTreeMap<(i16, u8), ChestStack>,
     ) -> Result<World, Error> {
+        self.with_chest_names(blocks, slots, &BTreeMap::new())
+    }
+
+    pub fn with_chest_names(
+        &self,
+        blocks: &BTreeMap<[i16; 2], Tile>,
+        slots: &BTreeMap<(i16, u8), ChestStack>,
+        names: &BTreeMap<i16, String>,
+    ) -> Result<World, Error> {
+        if names.iter().any(|(&index, name)| {
+            self.chests.get(index as usize).is_none() || name.encode_utf16().count() > 20
+        }) {
+            return Err(Error::Invalid("chest rename"));
+        }
         let mut out = BytesMut::from(&self.data[..self.offsets[1]]);
         let mut offsets = self.offsets;
         for (x, column) in self.columns.windows(2).enumerate() {
@@ -82,10 +96,16 @@ impl World {
         let mut written = 0;
         for (index, chest) in self.chests.iter().enumerate() {
             let header = r.0;
-            r.bytes(8)?;
+            let position = r.bytes(8)?;
             r.string()?;
-            r.i32()?;
-            out.extend_from_slice(&header[..header.len() - r.0.len()]);
+            let capacity = r.i32()?;
+            if let Some(name) = names.get(&(index as i16)) {
+                out.extend_from_slice(position);
+                terraria_binary::put_string(&mut out, name);
+                out.put_i32_le(capacity);
+            } else {
+                out.extend_from_slice(&header[..header.len() - r.0.len()]);
+            }
             for slot in 0..chest.capacity {
                 let before = r.0;
                 if r.i16()? != 0 {

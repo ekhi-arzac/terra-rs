@@ -206,10 +206,16 @@ pub(super) async fn run(
         &Packet::ChestState {
             chest: -1,
             position: [0; 2],
-            name: None,
+            name: Some("Bois 🪵".into()),
         },
     )
     .await?;
+    let label = Packet::ChestName {
+        chest,
+        position,
+        name: "Bois 🪵".into(),
+    };
+    observe(&mut b, &label).await?;
     observe(
         &mut b,
         &Packet::PlayerChest {
@@ -221,6 +227,15 @@ pub(super) async fn run(
     write_packet(&mut b, &Packet::RequestChest(position)).await?;
     observe(&mut b, &edit).await?;
     observe(&mut b, &opened).await?;
+    write_packet(
+        &mut b,
+        &Packet::RequestChestName {
+            chest: -1,
+            position,
+        },
+    )
+    .await?;
+    observe(&mut b, &label).await?;
     println!(
         "Observed chest open, slot edit, close and the same contents when the second player opened it."
     );
@@ -270,6 +285,10 @@ pub(super) async fn run(
     .await?;
     let mut log = Vec::new();
     let (_rejoined, _, _, _) = super::peers::join_capturing(addr, password, &mut log).await?;
+    let named=log.iter().any(|p|matches!(p,Packet::TileSection(s) if s.chests.iter().any(|c| c.index==chest && c.position==position && c.text=="Bois 🪵")));
+    if !named {
+        return Err("rejoined chest has the wrong name".into());
+    }
     if visible_tile(&log,cell).is_none_or(|tile| tile.block.is_some()) || !log.contains(&edit) || !log.iter().any(|p| matches!(p,Packet::DroppedItem(i) if Some(i.slot) == resource && i.item == 3 && i.stack == 1)) {
         return Err("rejoin did not reproduce mined cell, dropped stone and chest contents".into());
     }
@@ -314,6 +333,7 @@ mod tests {
         stop.send(()).unwrap();
         task.await.unwrap().unwrap();
         let reloaded = terraria_world::World::load(file).unwrap();
+        assert_eq!(reloaded.chests()[0].name, "Bois 🪵");
         let saved = &reloaded.chests()[0].items[0];
         assert_eq!((saved.item_type, saved.stack), (3, 17));
         assert_eq!(reloaded.tile(2099, 231).unwrap().block, None);

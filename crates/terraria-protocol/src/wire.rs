@@ -1,4 +1,4 @@
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Bytes, BytesMut};
 pub(crate) use terraria_binary::Reader;
 use thiserror::Error;
 
@@ -60,12 +60,4 @@ pub(crate) fn put_string(out: &mut BytesMut, value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) fn put_string_unchecked(out: &mut BytesMut, value: &str) {
-    let mut len = value.len();
-    while len >= 128 {
-        out.put_u8((len as u8 & 0x7f) | 0x80);
-        len >>= 7;
-    }
-    out.put_u8(len as u8);
-    out.extend_from_slice(value.as_bytes());
-}
+pub(crate) use terraria_binary::put_string as put_string_unchecked;

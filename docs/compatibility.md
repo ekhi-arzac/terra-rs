@@ -104,7 +104,7 @@ cargo run -p terraria-testkit -- resources 127.0.0.1:18777 2095 232
 
 Two headless clients exercised the same sequence on the Rust server and the supplied 1.4.5.8 server. Both assigned a world slot, enforced the pickup reservation, replicated a reduced stack and removed it on pickup. The clients opened a chest in turn, observed a stack of 17 stone, placed and mined stone, and rejoined to check the tile, dropped resource and chest contents. Exact item trajectories, pickup timing and tile framing are outside this comparison. The official server loaded a Rust-edited fixture after orderly shutdown and admitted a headless player.
 
-Resource support covers dirt, grass, stone, placed wood blocks, clay, mud, ice and both sets of early metal ores. The Rust server accepts client inventory updates. Multi-tile furniture, quick-stack to nearby chests, chest renaming, tool-power checks and server-side item physics remain open. Ground stacks are session state. The CLI saves supported block and chest changes on Ctrl-C or Unix SIGTERM and keeps the previous image in `.terra-rs.bak`.
+Resource support covers dirt, grass, stone, placed wood blocks, clay, mud, ice and both sets of early metal ores. The Rust server accepts client inventory updates. Multi-tile furniture, quick-stack to nearby chests, tool-power checks and server-side item physics remain open. Ground stacks are session state. The CLI saves supported block and chest changes on Ctrl-C or Unix SIGTERM and keeps the previous image in `.terra-rs.bak`.
 
 ## Terraria 1.4.6 PC direct-IP
 
@@ -143,3 +143,5 @@ cargo run -p terraria-testkit -- compare 127.0.0.1:1242 127.0.0.1:1240 town
 ```
 
 The installed 1.4.6.1 server and Rust matched all 116 observations from an official save containing 29 residents. Each slot matched on its initial NPC state, buffs, name and variation, and housing. The probe groups duplicate section and spawn announcements by slot. A loopback regression checks the saved Guide and Old Man on two successive joins. An additional fixture with an invalid house assigned in open terrain exposed a difference. The official server marked the occupant homeless while Rust reported the saved room assignment. Live room validation, relocation, town AI, spawning and combat remain pending.
+
+The two-player resource probe also renames an open chest on close, observes the name from another socket, looks it up by position and checks the next join’s section metadata. The sequence passed on Rust and the official 1.4.6.1 server. The Rust loopback test reloads the name and stack from the saved world.

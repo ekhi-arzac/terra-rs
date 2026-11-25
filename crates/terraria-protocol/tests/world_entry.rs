@@ -63,6 +63,15 @@ fn entry_and_player_wire_layouts_roundtrip_and_reject_bad_lengths() {
         },
         Packet::RemoveItem(399),
         Packet::RequestChest([2095, 232]),
+        Packet::RequestChestName {
+            chest: -1,
+            position: [2, 4],
+        },
+        Packet::ChestName {
+            chest: 1,
+            position: [2, 4],
+            name: "Bois 🪵".into(),
+        },
         Packet::PlayerChest {
             player: 2,
             chest: 129,
@@ -182,7 +191,12 @@ fn entry_and_player_wire_layouts_roundtrip_and_reject_bad_lengths() {
     for p in packets {
         let raw = p.encode().unwrap();
         let f = frame(p.id(), &raw[3..]);
-        let decode = if matches!(p, Packet::ChatCommand { .. } | Packet::RequestNpcName(_)) {
+        let decode = if matches!(
+            p,
+            Packet::ChatCommand { .. }
+                | Packet::RequestNpcName(_)
+                | Packet::RequestChestName { .. }
+        ) {
             Packet::decode_client
         } else {
             Packet::decode
@@ -197,6 +211,10 @@ fn entry_and_player_wire_layouts_roundtrip_and_reject_bad_lengths() {
         }
         let mut trailing = f.payload.to_vec();
         trailing.push(0);
+        if matches!(p, Packet::RequestChestName { .. }) {
+            assert_eq!(decode(&frame(f.id, &trailing)).unwrap(), p); // Stock cached-name string.
+            trailing.push(0);
+        }
         assert!(decode(&frame(f.id, &trailing)).is_err());
     }
     assert_eq!(

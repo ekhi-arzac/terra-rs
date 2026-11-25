@@ -75,3 +75,15 @@ impl<'a> Reader<'a> {
         Err(Error::StringLength)
     }
 }
+
+/// Write a .NET string with its 7-bit UTF-8 byte length.
+pub fn put_string(out: &mut bytes::BytesMut, value: &str) {
+    use bytes::BufMut;
+    let mut len = value.len();
+    while len >= 128 {
+        out.put_u8((len as u8 & 0x7f) | 0x80);
+        len >>= 7;
+    }
+    out.put_u8(len as u8);
+    out.extend_from_slice(value.as_bytes());
+}
