@@ -74,3 +74,14 @@ The mappings between saved flags and individual packet bits are in `terraria-wor
 The inflated stream starts with i32 X and Y in **tiles**, then i16 width and height. Normal rectangles contain 200 × 150 tiles in row order. Runs can cross rows. The tile records use the release's 754-entry frame-importance map and the chained headers, paints, wall and liquid fields documented for the world file. The high two bits of the first header select the width of the repeat count. Different valid run boundaries and DEFLATE encoders can represent identical terrain.
 
 Three lists follow the last tile. An i16 count precedes each list. A chest or sign entry contains an i16 index, two i16 coordinates and a string. A full tile entity contains a u8 kind, i32 entity ID, two i16 coordinates and type-specific data. Types 0, 2, 9 and 10 carry two extra bytes, types 1, 4, 6 and 8 carry a five-byte item, and type 7 ends after the coordinates. A display doll carries two equipment masks, pose and an extra mask, followed by the selected five-byte items. A hat rack uses one mask for four slots. The decoder checks the tile total, list lengths, inflated size and end of the compressed stream.
+
+## Items, chests and resource blocks
+
+| ID | Wire fields and supported behavior |
+| --- | --- |
+| 17 | Action byte, two i16 tile coordinates, i16 value, style byte. Actions 0, 1, 4 and 20 cover ordinary break, place, no-drop break and break-result confirmation for supported blocks. |
+| 21 | i16 world slot, two f32 position components, two f32 velocity components, i16 stack, prefix byte, flags byte, i16 item ID. Flag 4 adds a shimmer boolean and f32 time. Flag 8 adds the enemy pickup delay byte. The low two bits select spawn ownership. Slot 400 requests a new stack. |
+| 22 | i16 world slot, owner byte, 7-bit reservation time, delayed player byte, 7-bit delay time, two f32 position components. Player 255 represents an unowned stack. |
+| 39, 151 | Release the reserved slot (i16 slot and boolean), or remove the picked-up stack (i16 slot). The connection must own the stack to change or remove it. |
+| 31, 155, 32 | Request a chest by two i16 tile coordinates. The server replies with capacity and all slots. The current user can update a slot with its stack, prefix and type. |
+| 33, 80 | Chest open/close uses i16 chest index, two i16 coordinates and a name marker with an optional string. Index −1 closes the chest. ID 80 announces the player's slot and current chest index to peers. Chest renaming remains pending. |

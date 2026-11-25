@@ -48,7 +48,7 @@ Use `journey-on-classic` to exercise the 1.4.5.8 character/world mode rejection.
 
 ## Current boundary
 
-Verification uses headless TCP clients and the supplied 1.4.5.8 dedicated server. The user also confirmed that the installed stock 1.4.5.8 client stayed connected to tesst. After spawn the client sent creative powers module 6, a seven-byte biome report and an empty latency ping. NPC and event synchronization, simulation, combat and modified-world saves are pending. Server-side character mode, social transports and duplicate-name checks remain outside the implemented join behavior. The Rust server has been built and exercised on Linux x86-64. The workspace, including tests and benchmarks, passed `cargo check` for Windows x86-64 GNU and macOS ARM64. Linking and runtime tests on those operating systems are pending.
+Verification uses headless TCP clients and the supplied 1.4.5.8 dedicated server. The user also confirmed that the installed stock 1.4.5.8 client stayed connected to tesst. After spawn the client sent creative powers module 6, a seven-byte biome report and an empty latency ping. NPC and event synchronization, full simulation and combat are pending. Server-side character mode, social transports and duplicate-name checks remain outside the implemented join behavior. The Rust server has been built and exercised on Linux x86-64. The workspace, including tests and benchmarks, passed `cargo check` for Windows x86-64 GNU and macOS ARM64. Linking and runtime tests on those operating systems are pending.
 
 ## World-file verification
 
@@ -93,3 +93,15 @@ The two-player scenario ran on both implementations. Each observed slot activati
 The offline regression world `fixtures/entry-326.wld` retains the classic world's real extended header and auxiliary sections, with a small constructed terrain and chest. The supplied server loaded it and emitted `fixtures/entry-world-data-326.bin`. The section fixture `fixtures/tile-section-326.bin` was captured separately from the classic world at tile (1600, 150). It includes chest 26.
 
 On the current classic snapshot, release benchmarks measured 11.6 ms to load and index the world, 379 µs to read and compress a spawn section, and 1.91 ms to stage, verify and publish an exact copy.
+
+## Resource transfer and gameplay saves
+
+Run this mutating scenario on disposable copies of `docs/fixtures/entry-326.wld`. The two coordinates identify the fixture chest, with an empty test cell four tiles right and one up.
+
+```sh
+cargo run -p terraria-testkit -- resources 127.0.0.1:18777 2095 232
+```
+
+Two headless clients exercised the same sequence on the Rust server and the supplied 1.4.5.8 server. Both assigned a world slot, enforced the pickup reservation, replicated a reduced stack and removed it on pickup. The clients opened a chest in turn, observed a stack of 17 stone, placed and mined stone, and rejoined to check the tile, dropped resource and chest contents. Exact item trajectories, pickup timing and tile framing are outside this comparison. The official server loaded a Rust-edited fixture after orderly shutdown and admitted a headless player.
+
+Resource support covers dirt, grass, stone, placed wood blocks, clay, mud, ice and both sets of early metal ores. The Rust server accepts client inventory updates. Tree felling, multi-tile furniture, quick-stack to nearby chests, chest renaming, tool-power checks and server-side item physics remain open. Ground stacks are session state. The CLI saves supported block and chest changes on Ctrl-C or Unix SIGTERM and keeps the previous image in `.terra-rs.bak`.

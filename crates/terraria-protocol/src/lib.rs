@@ -1,6 +1,8 @@
 //! The direct TCP protocol of the supplied Terraria 1.4.5.8 server.
 mod banners;
 pub use banners::{BANNER_TYPES, BannerState};
+mod items;
+pub use items::{DroppedItem, ItemOwner, NEW_ITEM};
 mod movement;
 pub use movement::Movement;
 mod packet;

@@ -477,6 +477,7 @@ dependencies = [
 name = "terraria-binary"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "thiserror",
 ]
 
@@ -520,6 +521,7 @@ dependencies = [
 name = "terraria-testkit"
 version = "0.1.0"
 dependencies = [
+ "tempfile",
  "terraria-network",
  "terraria-protocol",
  "terraria-world",
@@ -530,6 +532,7 @@ dependencies = [
 name = "terraria-world"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "tempfile",
  "terraria-binary",
  "terraria-protocol",

@@ -4,6 +4,8 @@ mod npcs;
 pub use npcs::{Npc, TownNpc};
 mod join;
 pub use join::JoinState;
+mod saving;
+pub use saving::ChestStack;
 mod sections;
 use terraria_binary::tiles;
 pub use terraria_binary::tiles::{Liquid, Tile};
@@ -82,6 +84,7 @@ pub struct World {
     type_count: usize,
     /// Absolute file positions of the first tile in each column, plus the end.
     columns: Vec<usize>,
+    offsets: [usize; SECTION_COUNT + 1],
     active_interior: u32,
     has_dungeon: bool,
     chests: Vec<Chest>,
@@ -190,6 +193,7 @@ impl World {
             important,
             type_count,
             columns,
+            offsets,
             active_interior,
             has_dungeon,
             chests,

@@ -47,3 +47,7 @@ The active roster has one owner and a bounded 256-event input channel. Its per-p
 | Shutdown | `Main.DedServ` handles console input and server-loop termination. `WorldFile.InternalSaveWorld` and `DoRollingBackups` are the reference save/backup entry points. |
 
 The planned simulation will own the world and active entities in one fixed-step loop. The current event-driven roster owns character state and fans out movement, inventory and chat. A simulation tick can consume validated commands at this boundary. Tick order, RNG consumption, individual AI decisions, interactions and persistence of gameplay changes require further implementation and comparison.
+
+The roster serializes world-item allocation, pickup reservations, chest access and resource edits. Ground items occupy 400 slots and use owner updates for position and velocity. The server checks pickup candidates every 100 ms and requests a release from the previous owner before transferring a live reservation. Item physics, inventory capacity and specialized pickup ranges remain incomplete.
+
+A sparse map holds the latest tile and chest slot changes. Terrain workers copy the updates for the requested section. A revision taken before the initial transfer lets joining sockets catch up with changes before packet 129. On orderly shutdown the server drains gameplay events, rewrites changed tile runs and chest slots, adjusts the world section directory and validates the result. It checks the loaded image against disk and stages a backup and replacement in the world directory.

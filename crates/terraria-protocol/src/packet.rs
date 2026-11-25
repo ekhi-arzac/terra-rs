@@ -90,6 +90,29 @@ pub enum Packet {
         prefix: u8,
         item: i16,
     },
+    TileChange {
+        action: u8,
+        position: [i16; 2],
+        value: i16,
+        style: u8,
+    },
+    DroppedItem(crate::DroppedItem),
+    ItemOwner(crate::ItemOwner),
+    ReleaseItem {
+        slot: i16,
+        force: bool,
+    },
+    RemoveItem(i16),
+    RequestChest([i16; 2]),
+    ChestState {
+        chest: i16,
+        position: [i16; 2],
+        name: Option<String>,
+    },
+    PlayerChest {
+        player: u8,
+        chest: i16,
+    },
     Spawn(Spawn),
     Movement(crate::Movement),
     PlayerZones {
@@ -147,6 +170,14 @@ impl Packet {
             Self::RequestSections { .. } => 8,
             Self::Status { .. } => 9,
             Self::TileSection(_) => 10,
+            Self::TileChange { .. } => 17,
+            Self::DroppedItem(_) => 21,
+            Self::ItemOwner(_) => 22,
+            Self::ReleaseItem { .. } => 39,
+            Self::RemoveItem(_) => 151,
+            Self::RequestChest(_) => 31,
+            Self::ChestState { .. } => 33,
+            Self::PlayerChest { .. } => 80,
             Self::ChestSize { .. } => 155,
             Self::ChestItem { .. } => 32,
             Self::Spawn(_) => 12,
@@ -245,6 +276,39 @@ impl Packet {
                 let data = r.bytes(r.0.len())?;
                 Self::TileSection(Box::new(crate::section::TileSection::read(data)?))
             }
+            17 => Self::TileChange {
+                action: r.byte()?,
+                position: r.i16s()?,
+                value: r.i16()?,
+                style: r.byte()?,
+            },
+            21 => Self::DroppedItem(crate::DroppedItem::read(&mut r)?),
+            22 => Self::ItemOwner(crate::ItemOwner::read(&mut r)?),
+            39 => Self::ReleaseItem {
+                slot: r.i16()?,
+                force: r.byte()? != 0,
+            },
+            151 => Self::RemoveItem(r.i16()?),
+            31 => Self::RequestChest(r.i16s()?),
+            33 => {
+                let chest = r.i16()?;
+                let position = r.i16s()?;
+                let name = match r.byte()? {
+                    0 => None,
+                    255 => Some(String::new()),
+                    1..=20 => Some(r.string()?.to_owned()),
+                    _ => return Err(Error::Invalid("chest name length")),
+                };
+                Self::ChestState {
+                    chest,
+                    position,
+                    name,
+                }
+            }
+            80 => Self::PlayerChest {
+                player: r.byte()?,
+                chest: r.i16()?,
+            },
             155 => Self::ChestSize {
                 index: r.i16()?,
                 capacity: r.i16()?,
@@ -381,6 +445,57 @@ impl Packet {
                 out.put_u8(*flags);
             }
             Self::TileSection(section) => section.write(&mut out)?,
+            Self::TileChange {
+                action,
+                position,
+                value,
+                style,
+            } => {
+                out.put_u8(*action);
+                for n in position {
+                    out.put_i16_le(*n);
+                }
+                out.put_i16_le(*value);
+                out.put_u8(*style);
+            }
+            Self::DroppedItem(item) => item.write(&mut out),
+            Self::ItemOwner(owner) => owner.write(&mut out)?,
+            Self::ReleaseItem { slot, force } => {
+                out.put_i16_le(*slot);
+                out.put_u8((*force).into());
+            }
+            Self::RemoveItem(slot) => out.put_i16_le(*slot),
+            Self::RequestChest(position) => {
+                for v in position {
+                    out.put_i16_le(*v);
+                }
+            }
+            Self::ChestState {
+                chest,
+                position,
+                name,
+            } => {
+                out.put_i16_le(*chest);
+                for v in position {
+                    out.put_i16_le(*v);
+                }
+                match name {
+                    None => out.put_u8(0),
+                    Some(s) if s.is_empty() => out.put_u8(255),
+                    Some(s) => {
+                        let len = s.encode_utf16().count();
+                        if len > 20 {
+                            return Err(Error::Invalid("chest name length"));
+                        }
+                        out.put_u8(len as u8);
+                        put_string(&mut out, s)?;
+                    }
+                }
+            }
+            Self::PlayerChest { player, chest } => {
+                out.put_u8(*player);
+                out.put_i16_le(*chest);
+            }
             Self::ChestSize { index, capacity } => {
                 out.put_i16_le(*index);
                 out.put_i16_le(*capacity);

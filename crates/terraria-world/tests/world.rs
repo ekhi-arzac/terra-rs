@@ -229,3 +229,67 @@ fn official_town_records_preserve_housing_and_variations() {
     assert!(town.homeless);
     assert_eq!(town.variation, Some(0));
 }
+
+#[test]
+fn edited_runs_and_chest_slots_survive_reopening_and_keep_the_original_backup() {
+    use std::collections::BTreeMap;
+    use terraria_world::ChestStack;
+    let bytes = include_bytes!("../../../docs/fixtures/entry-326.wld");
+    let original = World::parse(bytes.to_vec()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session.wld");
+    original.save(&path).unwrap();
+    let mut blocks = BTreeMap::new();
+    for y in [0, 1, 400, 401, 1199] {
+        let mut tile = original.tile(2099, y).unwrap();
+        tile.block = Some(7);
+        tile.frame = None;
+        blocks.insert([2099, y as i16], tile);
+    }
+    let slots = BTreeMap::from([
+        (
+            (0, 0),
+            ChestStack {
+                item: 0,
+                prefix: 0,
+                stack: 0,
+            },
+        ),
+        (
+            (0, 1),
+            ChestStack {
+                item: 12,
+                prefix: 0,
+                stack: 42,
+            },
+        ),
+    ]);
+    let edited = original.with_edits(&blocks, &slots).unwrap();
+    original.publish_edits(&edited, &path).unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("session.wld.terra-rs.bak")).unwrap(),
+        bytes
+    );
+    let disk = World::load(&path).unwrap();
+    for y in 0..1200 {
+        let expected = blocks
+            .get(&[2099, y as i16])
+            .copied()
+            .unwrap_or_else(|| original.tile(2099, y).unwrap());
+        assert_eq!(
+            terraria_protocol::section::section_tile(disk.tile(2099, y).unwrap()),
+            terraria_protocol::section::section_tile(expected)
+        );
+    }
+    assert_eq!(disk.metadata().revision, original.metadata().revision + 1);
+    assert_eq!(disk.chests()[0].items.len(), 1);
+    let stored = &disk.chests()[0].items[0];
+    assert_eq!((stored.slot, stored.stack, stored.item_type), (1, 42, 12));
+    let modified = std::fs::read(&path).unwrap();
+    assert!(original.publish_edits(&edited, &path).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), modified);
+    assert_eq!(
+        std::fs::read(dir.path().join("session.wld.terra-rs.bak")).unwrap(),
+        bytes
+    );
+}

@@ -10,4 +10,5 @@ terraria-network.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 terraria-world.workspace = true

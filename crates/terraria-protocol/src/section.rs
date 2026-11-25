@@ -3,7 +3,7 @@ use crate::wire::{Error, Reader};
 use bytes::{BufMut, BytesMut};
 use flate2::{Compression, Decompress, FlushDecompress, Status, write::DeflateEncoder};
 use std::io::Write;
-use terraria_binary::tiles::{Liquid, Tile, read_run};
+use terraria_binary::tiles::{Tile, read_run};
 
 pub const FRAME_IMPORTANT: &[u8; 95] = include_bytes!("frame-important-326.bin");
 pub const TILE_TYPES: usize = 754;
@@ -222,100 +222,13 @@ fn write_objects(out: &mut BytesMut, objects: &[SectionObject], limit: i16) -> R
 }
 
 fn write_run(out: &mut BytesMut, run: &TileRun) -> Result<(), Error> {
-    let t = section_tile(run.tile);
-    let [_, mut second, mut third, fourth] = t.flags;
-    let mut first = 0;
-    if let Some(block) = t.block {
-        let id = usize::from(block);
-        if id >= TILE_TYPES || (FRAME_IMPORTANT[id / 8] & (1 << (id % 8)) != 0) != t.frame.is_some()
-        {
-            return Err(Error::Invalid("section block or frame"));
-        }
-        first |= 2;
-        if block > 255 {
-            first |= 32;
-        }
-        if t.block_paint != 0 {
-            third |= 8;
-        }
-    }
-    if t.wall != 0 {
-        first |= 4;
-        if t.wall_paint != 0 {
-            third |= 16;
-        }
-        if t.wall > 255 {
-            third |= 64;
-        }
-    }
-    if let Some((kind, _)) = t.liquid {
-        first |= match kind {
-            Liquid::Water => 8,
-            Liquid::Lava => 16,
-            Liquid::Honey => 24,
-            Liquid::Shimmer => {
-                third |= 128;
-                8
-            }
-        };
-    }
-    if fourth != 0 {
-        third |= 1;
-    }
-    if third != 0 {
-        second |= 1;
-    }
-    if second != 0 {
-        first |= 1;
-    }
-    let repeats = run.count - 1;
-    first |= match repeats {
-        0 => 0,
-        1..=255 => 64,
-        _ => 128,
-    };
-    out.put_u8(first);
-    if second != 0 {
-        out.put_u8(second);
-    }
-    if third != 0 {
-        out.put_u8(third);
-    }
-    if fourth != 0 {
-        out.put_u8(fourth);
-    }
-    if let Some(block) = t.block {
-        if block > 255 {
-            out.put_u16_le(block)
-        } else {
-            out.put_u8(block as u8)
-        }
-        if let Some((x, y)) = t.frame {
-            out.put_i16_le(x);
-            out.put_i16_le(y);
-        }
-        if t.block_paint != 0 {
-            out.put_u8(t.block_paint);
-        }
-    }
-    if t.wall != 0 {
-        out.put_u8(t.wall as u8);
-        if t.wall_paint != 0 {
-            out.put_u8(t.wall_paint);
-        }
-    }
-    if let Some((_, amount)) = t.liquid {
-        out.put_u8(amount);
-    }
-    if t.wall > 255 {
-        out.put_u8((t.wall >> 8) as u8);
-    }
-    if repeats > 255 {
-        out.put_u16_le(repeats)
-    } else if repeats > 0 {
-        out.put_u8(repeats as u8);
-    }
-    Ok(())
+    Ok(terraria_binary::tiles::write_run(
+        out,
+        section_tile(run.tile),
+        run.count,
+        FRAME_IMPORTANT,
+        TILE_TYPES,
+    )?)
 }
 
 /// A release-326 tile entity with its validated type-specific payload. Disk and

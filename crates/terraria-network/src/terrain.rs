@@ -1,10 +1,17 @@
 use crate::{Error, write_packet};
-use std::{io, sync::Arc};
+use bytes::{Bytes, BytesMut};
+use std::{
+    collections::BTreeMap,
+    io,
+    sync::{Arc, RwLock},
+};
+use terraria_protocol::Error as ProtocolError;
+use terraria_protocol::section::{TileRun, TileSection, section_tile};
 use terraria_protocol::{
     NetworkText, Packet, WorldData,
     section::{SECTION_HEIGHT, SECTION_WIDTH},
 };
-use terraria_world::World;
+use terraria_world::{ChestStack, Tile, World};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::Semaphore,
@@ -15,9 +22,46 @@ pub(super) struct LoadedWorld {
     join_state: bytes::Bytes,
     source: World,
     workers: Arc<Semaphore>,
+    edits: RwLock<WorldEdits>,
+}
+type ChangedTiles = BTreeMap<[i16; 2], (u64, Tile)>;
+
+#[derive(Default)]
+struct WorldEdits {
+    tiles: BTreeMap<[u16; 2], ChangedTiles>,
+    revision: u64,
+    slots: BTreeMap<(i16, u8), (u64, ChestStack)>,
+}
+
+fn chest_item(chest: i16, slot: u8, value: ChestStack) -> Packet {
+    Packet::ChestItem {
+        chest,
+        slot,
+        stack: value.stack,
+        prefix: value.prefix,
+        item: value.item,
+    }
 }
 
 impl LoadedWorld {
+    pub fn save_changes(&self, path: &std::path::Path) -> Result<(), Error> {
+        let edits = self.edits.read().unwrap();
+        if edits.revision == 0 {
+            return Ok(());
+        }
+        let blocks = edits
+            .tiles
+            .values()
+            .flat_map(|s| s.iter().map(|(&pos, &(_, tile))| (pos, tile)))
+            .collect();
+        let slots = edits.slots.iter().map(|(&key, &(_, v))| (key, v)).collect();
+        drop(edits);
+        let updated = self.source.with_edits(&blocks, &slots)?;
+        self.source.publish_edits(&updated, path)?;
+        tracing::info!(world=%path.display(), tiles=blocks.len(),chest_slots=slots.len(),"saved world changes");
+        Ok(())
+    }
+
     pub fn new(source: World) -> Result<Self, Error> {
         let state = source.join_state()?;
         let data = state.info;
@@ -37,9 +81,147 @@ impl LoadedWorld {
         Ok(Self {
             data,
             join_state: join_state.freeze(),
+            edits: RwLock::default(),
             source,
             workers,
         })
+    }
+    pub fn section_at([x, y]: [i16; 2]) -> [u16; 2] {
+        [x as u16 / SECTION_WIDTH, y as u16 / SECTION_HEIGHT]
+    }
+    pub fn tile(&self, pos: [i16; 2]) -> Option<Tile> {
+        if let Some((_, tile)) = self
+            .edits
+            .read()
+            .unwrap()
+            .tiles
+            .get(&Self::section_at(pos))
+            .and_then(|s| s.get(&pos))
+        {
+            return Some(*tile);
+        }
+        self.source
+            .tile(u32::try_from(pos[0]).ok()?, u32::try_from(pos[1]).ok()?)
+            .ok()
+    }
+    pub fn change_block(&self, pos: [i16; 2], mut tile: Tile, block: Option<u16>) {
+        tile.block = block;
+        tile.frame = None;
+        tile.block_paint = 0;
+        tile.flags[1] &= !0x70; // slope and half-brick
+        tile.flags[2] &= !4; // inactive block
+        tile.flags[3] &= !0x0a; // block invisibility and fullbright
+        let mut edits = self.edits.write().unwrap();
+        edits.revision += 1;
+        let rev = edits.revision;
+        edits
+            .tiles
+            .entry(Self::section_at(pos))
+            .or_default()
+            .insert(pos, (rev, tile));
+    }
+    pub fn tile_frame(pos: [i16; 2], tile: Tile) -> Result<Bytes, ProtocolError> {
+        Packet::TileSection(Box::new(TileSection {
+            origin: pos.map(i32::from),
+            size: [1, 1],
+            runs: vec![TileRun {
+                tile: section_tile(tile),
+                count: 1,
+            }],
+            chests: vec![],
+            signs: vec![],
+            entities: vec![],
+        }))
+        .encode()
+    }
+    pub fn chest_at(&self, position: [i16; 2]) -> Option<i16> {
+        self.source
+            .chests()
+            .iter()
+            .position(|c| c.position == (position[0].into(), position[1].into()))
+            .map(|i| i as i16)
+    }
+    pub fn revision(&self) -> u64 {
+        self.edits.read().unwrap().revision
+    }
+    pub fn catch_up(
+        &self,
+        since: u64,
+        sent: &std::collections::BTreeSet<[u16; 2]>,
+        out: &mut BytesMut,
+    ) -> Result<(), ProtocolError> {
+        let edits = self.edits.read().unwrap();
+        if since == edits.revision {
+            return Ok(());
+        }
+        for index in sent {
+            if let Some(changes) = edits.tiles.get(index) {
+                for (&pos, &(revision, tile)) in changes {
+                    if revision > since {
+                        out.extend_from_slice(&Self::tile_frame(pos, tile)?);
+                    }
+                }
+            }
+        }
+        for (&(index, slot), (rev, value)) in &edits.slots {
+            let (x, y) = self.source.chests()[index as usize].position;
+            if *rev > since && sent.contains(&[x as u16 / SECTION_WIDTH, y as u16 / SECTION_HEIGHT])
+            {
+                out.extend_from_slice(&chest_item(index, slot, *value).encode()?);
+            }
+        }
+        Ok(())
+    }
+    pub fn edit_chest(&self, index: i16, slot: u8, value: ChestStack) -> bool {
+        if !self
+            .source
+            .chests()
+            .get(index as usize)
+            .is_some_and(|c| u32::from(slot) < c.capacity)
+        {
+            return false;
+        }
+        let mut edits = self.edits.write().unwrap();
+        edits.revision += 1;
+        let rev = edits.revision;
+        edits.slots.insert((index, slot), (rev, value));
+        true
+    }
+    pub fn chest_contents(&self, index: i16) -> Result<BytesMut, ProtocolError> {
+        let chest = &self.source.chests()[index as usize];
+        if chest.capacity > 256 {
+            return Err(ProtocolError::Invalid("chest capacity"));
+        }
+        let edits = self.edits.read().unwrap();
+        let mut batch = BytesMut::new();
+        batch.extend_from_slice(
+            &Packet::ChestSize {
+                index,
+                capacity: chest.capacity as i16,
+            }
+            .encode()?,
+        );
+        let mut items = chest.items.iter().peekable();
+        for slot in 0..chest.capacity {
+            let item = items.next_if(|v| v.slot == slot);
+            if let Some((_, value)) = edits.slots.get(&(index, slot as u8)) {
+                batch.extend_from_slice(&chest_item(index, slot as u8, *value).encode()?);
+            } else {
+                batch.extend_from_slice(
+                    &Packet::ChestItem {
+                        chest: index,
+                        slot: slot as u8,
+                        item: item
+                            .map_or(Ok(0), |v| i16::try_from(v.item_type))
+                            .map_err(|_| ProtocolError::Invalid("chest item type"))?,
+                        stack: item.map_or(0, |v| v.stack),
+                        prefix: item.map_or(0, |v| v.prefix),
+                    }
+                    .encode()?,
+                );
+            }
+        }
+        Ok(batch)
     }
     pub fn contains(&self, index: [u16; 2]) -> bool {
         u32::from(index[0]) * u32::from(SECTION_WIDTH) < self.source.metadata().width
@@ -57,7 +239,17 @@ impl LoadedWorld {
         let source = Arc::clone(self);
         let (frame, mut indices) = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let section = source.source.section(index)?;
+            let edits: Vec<_> = source
+                .edits
+                .read()
+                .unwrap()
+                .tiles
+                .get(&index)
+                .into_iter()
+                .flatten()
+                .map(|(&pos, &(_, tile))| (pos, tile))
+                .collect();
+            let section = source.source.section_with_edits(index, &edits)?;
             let indices: Vec<_> = section.chests.iter().map(|c| c.index).collect();
             Ok::<_, Error>((Packet::TileSection(Box::new(section)).encode()?, indices))
         })
@@ -65,39 +257,7 @@ impl LoadedWorld {
         out.write_all(&frame).await?;
         indices.sort_unstable();
         for index in indices {
-            let mut batch = Vec::new();
-            let chest = &self.source.chests()[index as usize];
-            if chest.capacity > 256 {
-                return Err(
-                    terraria_world::Error::Invalid("chest slots exceed protocol capacity").into(),
-                );
-            }
-            batch.extend(
-                Packet::ChestSize {
-                    index,
-                    capacity: chest.capacity as i16,
-                }
-                .encode()?,
-            );
-            let mut items = chest.items.iter().peekable();
-            for slot in 0..chest.capacity {
-                let item = items.next_if(|item| item.slot == slot);
-                let item_id = item
-                    .map_or(Ok(0), |v| i16::try_from(v.item_type))
-                    .map_err(|_| {
-                        terraria_world::Error::Invalid("chest item ID exceeds protocol range")
-                    })?;
-                batch.extend(
-                    Packet::ChestItem {
-                        chest: index,
-                        slot: slot as u8,
-                        stack: item.map_or(0, |v| v.stack),
-                        prefix: item.map_or(0, |v| v.prefix),
-                        item: item_id,
-                    }
-                    .encode()?,
-                );
-            }
+            let batch = self.chest_contents(index)?;
             out.write_all(&batch).await?;
         }
         Ok(())

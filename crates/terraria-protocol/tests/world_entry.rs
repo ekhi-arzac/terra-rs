@@ -38,6 +38,46 @@ fn movement() -> Movement {
 #[test]
 fn entry_and_player_wire_layouts_roundtrip_and_reject_bad_lengths() {
     let packets = [
+        Packet::DroppedItem(terraria_protocol::DroppedItem {
+            slot: 400,
+            position: [4.0, 6.0],
+            velocity: [0.1, -2.0],
+            stack: 30,
+            prefix: 4,
+            ownership: 2,
+            item: 1,
+            shimmer: Some((true, 0.6)),
+            enemy_delay: Some(90),
+        }),
+        Packet::ItemOwner(terraria_protocol::ItemOwner {
+            slot: 399,
+            player: 23,
+            reservation: 180,
+            delayed_player: 255,
+            delay: 10000,
+            position: [1., 2.],
+        }),
+        Packet::ReleaseItem {
+            slot: 399,
+            force: true,
+        },
+        Packet::RemoveItem(399),
+        Packet::RequestChest([2095, 232]),
+        Packet::PlayerChest {
+            player: 2,
+            chest: 129,
+        },
+        Packet::ChestState {
+            chest: 4,
+            position: [18, 20],
+            name: Some("Café".into()),
+        },
+        Packet::TileChange {
+            action: 20,
+            position: [21, 22],
+            value: 0,
+            style: 0,
+        },
         Packet::RequestSections {
             spawn: [-1, 100],
             team: 3,

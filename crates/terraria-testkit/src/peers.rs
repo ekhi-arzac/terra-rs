@@ -4,26 +4,32 @@ use terraria_network::{read_frame, write_packet};
 use terraria_protocol::{GREETING, Movement, NetworkText, Packet};
 use tokio::net::TcpStream;
 
-async fn join(
+pub(super) async fn join(
     addr: SocketAddr,
     password: Option<&str>,
 ) -> Result<(TcpStream, u8, [i16; 2], Option<[u16; 2]>)> {
+    join_capturing(addr, password, &mut Vec::new()).await
+}
+pub(super) async fn join_capturing(
+    addr: SocketAddr,
+    password: Option<&str>,
+    log: &mut Vec<Packet>,
+) -> Result<(TcpStream, u8, [i16; 2], Option<[u16; 2]>)> {
     let mut stream = TcpStream::connect(addr).await?;
-    let mut log = Vec::new();
     write_packet(&mut stream, &Packet::Hello(GREETING.into())).await?;
-    let mut response = receive(&mut stream, &mut log).await?;
+    let mut response = receive(&mut stream, log).await?;
     if response == Packet::RequestPassword {
         write_packet(
             &mut stream,
             &Packet::Password(password.ok_or("set TERRARIA_PROBE_PASSWORD")?.into()),
         )
         .await?;
-        response = receive(&mut stream, &mut log).await?;
+        response = receive(&mut stream, log).await?;
     }
     let Packet::AssignSlot { player, .. } = response else {
         return Err("admission failed".into());
     };
-    entry::run(&mut stream, player, &mut log, [-1, -1]).await?;
+    entry::run(&mut stream, player, log, [-1, -1]).await?;
     let info = log
         .iter()
         .find_map(|p| match p {
@@ -52,7 +58,7 @@ async fn join(
         .find(|index| !seen.contains(&[i32::from(index[0]) * 200, i32::from(index[1]) * 150]));
     Ok((stream, player, info.spawn, unseen))
 }
-async fn observe(stream: &mut TcpStream, expected: &Packet) -> Result<()> {
+pub(super) async fn observe(stream: &mut TcpStream, expected: &Packet) -> Result<()> {
     for _ in 0..65536 {
         let frame = read_frame(stream)
             .await?

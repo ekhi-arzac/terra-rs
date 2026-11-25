@@ -6,9 +6,9 @@
 | 1 — Protocol foundation | Implemented for the supported packet set | Bounded framing, directional module decoding, typed layouts, malformed-input tests and recorded fixtures. |
 | 2 — Connectivity | Stock client and headless world entry verified | Seven admission scenarios against the official server, plus world entry and two concurrent named players. The user joined tesst with the stock 1.4.5.8 client and confirmed the connection stayed open. |
 | 3 — World loading and synchronization | Headless entry from existing worlds works | World header, compressed sections, chests and all slots, signs, tile entity records, banner state, lunar tower shields, cavern variants and follow-up section requests. Two live world-entry comparisons reached packet 129. NPC, quest, biome and other module state remain incomplete. |
-| 4 — Basic multiplayer | Movement, chat and membership verified | One roster owner, per-socket identity, player snapshots, visible inventory and vitals. Two headless clients observed movement, chat, departure and reconnection on each server. Chest interaction and area-of-interest updates during movement remain open. |
-| 5 — Gameplay | Early world state only | Cavern monster variants reproduce the seeded reference selection. Active NPCs, combat, liquids, item pickup, wiring and world updates still need simulation. |
-| 6 — Persistence and administration | Read-only world snapshots, verified copies and configuration | The server accepts TOML configuration, passwords, slot limits and graceful shutdown. Modified-world saves, rolling backups and administration commands remain open. |
+| 4 — Basic multiplayer | Movement, chat and membership verified | One roster owner, per-socket identity, player snapshots, visible inventory and vitals. Two headless clients observed movement, chat, departure and reconnection on each server. Chest ownership, edits and reopen are covered by the two-player resource probe. Area-of-interest updates remain open. |
+| 5 — Gameplay | Basic resource interactions | Cavern monster variants reproduce the seeded reference selection. Dropped stacks, pickup reservations, partial pickups and basic resource mining/placement are synchronized. NPCs, combat, liquids, wiring and item physics remain open. |
+| 6 — Persistence and administration | Supported block and chest changes saved on shutdown | The server accepts TOML configuration, passwords, slot limits and graceful shutdown. Shutdown validates the edited world and keeps the previous file. Periodic saves, rolling backup history and administration commands remain open. |
 | 7 — Compatibility and performance | Ongoing | Rust headless differential scenarios and packet/world/section benchmarks. |
 
 ## Verification
@@ -19,4 +19,4 @@ Linux x86-64 passed the workspace tests, formatting, Clippy with warnings denied
 
 1. Generate join snapshots for the parsed town and persistent NPC records, buffs and housing from release-326 NPC defaults. Add a comparison using a populated town.
 2. Implement remaining entry modules and requests driven by movement. Keep the reported reference-only packet counts visible as coverage expands.
-3. Extend the roster owner with the fixed-step world update. Begin mutable interactions with chest ownership, authoritative inventory changes and save/reload tests.
+3. Extend ground-item physics and pickup eligibility, tree harvesting, multi-tile interactions and periodic saves.

@@ -50,7 +50,7 @@ pub(super) async fn run(
         let frame = read_frame(stream).await?.ok_or("EOF during world entry")?;
         match frame.id {
             2 => return Err(format!("server closed entry: {:?}", Packet::decode(&frame)?).into()),
-            7 | 9 | 10 | 32 | 49 | 101 | 129 | 136 | 155 | 82
+            7 | 9 | 10 | 21 | 22 | 32 | 49 | 101 | 129 | 136 | 155 | 82
                 if frame.id != 82 || frame.payload.starts_with(&[11, 0, 0]) =>
             {
                 let p = Packet::decode(&frame)?;
@@ -61,7 +61,7 @@ pub(super) async fn run(
                         }
                     }
                     Packet::TileSection(s) => {
-                        if !coords.insert(s.origin) {
+                        if !invited && !coords.insert(s.origin) {
                             return Err("duplicate section".into());
                         }
                     }
@@ -73,8 +73,9 @@ pub(super) async fn run(
                         }
                     }
                     Packet::ChestItem { chest, slot, .. } => {
-                        if !sizes.get(chest).is_some_and(|n| i16::from(*slot) < *n)
-                            || !slots.insert((*chest, *slot))
+                        if !invited
+                            && (!sizes.get(chest).is_some_and(|n| i16::from(*slot) < *n)
+                                || !slots.insert((*chest, *slot)))
                         {
                             return Err("invalid or duplicate chest slot".into());
                         }

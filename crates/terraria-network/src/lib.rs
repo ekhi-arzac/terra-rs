@@ -1,4 +1,5 @@
 //! Bounded TCP transport and connection state for direct-IP clients.
+mod drops;
 mod players;
 use players::{Event, Roster};
 use tokio::sync::mpsc;
@@ -66,6 +67,7 @@ async fn connection(
         |w| Session::for_world(slot, &w.data),
     );
     let mut sent = BTreeSet::new();
+    let mut revision = 0;
     let join = async {
         loop {
             let Some(frame) = read_frame(&mut stream).await? else {
@@ -114,6 +116,7 @@ async fn connection(
                 && session.phase() == &Phase::SendingSections
                 && let Some(world) = world
             {
+                revision = world.revision();
                 sent = world.transfer(&mut stream, spawn, team).await?;
                 session.phase = Phase::AwaitSpawn;
             }
@@ -136,6 +139,7 @@ async fn connection(
             events,
             world,
             sent,
+            revision,
         )
         .await?;
     }
@@ -151,12 +155,24 @@ pub async fn serve(
     world: Option<terraria_world::World>,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), Error> {
+    serve_with_save(listener, max_players, password, world, None, shutdown).await
+}
+
+/// Publish gameplay edits on orderly shutdown when the listener owns a disk-backed world.
+pub async fn serve_with_save(
+    listener: TcpListener,
+    max_players: NonZeroU8,
+    password: String,
+    world: Option<terraria_world::World>,
+    save_path: Option<std::path::PathBuf>,
+    shutdown: impl Future<Output = ()>,
+) -> Result<(), Error> {
     let world_info = world.map(LoadedWorld::new).transpose()?.map(Arc::new);
     let mut free: BTreeSet<u8> = (0..max_players.get()).collect();
     let password: Arc<str> = password.into();
     let mut tasks = JoinSet::new();
     let (events, input) = mpsc::channel(256);
-    let roster = tokio::spawn(Roster::default().run(input));
+    let roster = tokio::spawn(Roster::new(world_info.clone()).run(input));
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -189,5 +205,8 @@ pub async fn serve(
     tasks.shutdown().await;
     drop(events);
     roster.await?;
+    if let (Some(world), Some(path)) = (world_info, save_path) {
+        tokio::task::spawn_blocking(move || world.save_changes(&path)).await??;
+    }
     Ok(())
 }

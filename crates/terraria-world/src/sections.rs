@@ -30,6 +30,15 @@ pub(crate) fn entities(bytes: &[u8]) -> Result<Vec<TileEntity>, Error> {
 impl World {
     /// Convert the saved column runs to a row-major transfer rectangle in one pass per column.
     pub fn section(&self, index: [u16; 2]) -> Result<TileSection, Error> {
+        self.section_with_edits(index, &[])
+    }
+
+    /// Apply the live block changes before recompressing the row-major cells.
+    pub fn section_with_edits(
+        &self,
+        index: [u16; 2],
+        edits: &[([i16; 2], Tile)],
+    ) -> Result<TileSection, Error> {
         let x = u32::from(index[0]) * u32::from(SECTION_WIDTH);
         let y = u32::from(index[1]) * u32::from(SECTION_HEIGHT);
         if x >= self.meta.width || y >= self.meta.height {
@@ -51,6 +60,14 @@ impl World {
                 }
                 row += len;
             }
+        }
+        for &([px, py], tile) in edits {
+            let dx = i32::from(px) - x as i32;
+            let dy = i32::from(py) - y as i32;
+            if !(0..width as i32).contains(&dx) || !(0..height as i32).contains(&dy) {
+                return Err(Error::Invalid("edit outside section"));
+            }
+            cells[dy as usize * width as usize + dx as usize] = section_tile(tile);
         }
         let mut runs: Vec<TileRun> = Vec::new();
         for tile in cells {

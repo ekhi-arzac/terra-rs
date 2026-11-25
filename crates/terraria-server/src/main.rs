@@ -23,6 +23,16 @@ impl Default for Config {
     }
 }
 
+async fn shutdown_signal() -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut term = signal(SignalKind::terminate())?;
+        tokio::select! { result = tokio::signal::ctrl_c() => result, _ = term.recv() => Ok(()) }
+    }
+    #[cfg(not(unix))]
+    tokio::signal::ctrl_c().await
+}
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     tracing_subscriber::fmt().init();
@@ -49,13 +59,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     let listener = TcpListener::bind(config.bind).await?;
     info!(address = %listener.local_addr()?, slots = %config.max_players, "listening for Terraria clients");
-    terraria_network::serve(
+    terraria_network::serve_with_save(
         listener,
         config.max_players,
         config.password,
         world,
+        config.world,
         async {
-            if let Err(error) = tokio::signal::ctrl_c().await {
+            if let Err(error) = shutdown_signal().await {
                 tracing::error!(%error, "shutdown signal handler failed");
             }
         },
