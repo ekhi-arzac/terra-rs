@@ -50,7 +50,7 @@ pub(super) async fn run(
         let frame = read_frame(stream).await?.ok_or("EOF during world entry")?;
         match frame.id {
             2 => return Err(format!("server closed entry: {:?}", Packet::decode(&frame)?).into()),
-            7 | 9 | 10 | 21 | 22 | 32 | 49 | 101 | 129 | 136 | 155 | 82
+            7 | 9 | 10 | 20 | 21 | 22 | 32 | 49 | 101 | 129 | 136 | 155 | 82
                 if frame.id != 82 || frame.payload.starts_with(&[11, 0, 0]) =>
             {
                 let p = Packet::decode(&frame)?;

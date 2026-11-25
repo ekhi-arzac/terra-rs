@@ -81,7 +81,8 @@ Three lists follow the last tile. An i16 count precedes each list. A chest or si
 
 | ID | Wire fields and supported behavior |
 | --- | --- |
-| 17 | Action byte, two i16 tile coordinates, i16 value, style byte. Actions 0, 1, 4 and 20 cover ordinary break, place, no-drop break and break-result confirmation for supported blocks. A tree cut sends one batch of no-drop tile removals to all active clients, followed by the server-owned wood drop. |
+| 17 | Action byte, two i16 tile coordinates, i16 value, style byte. Actions 0, 1, 4 and 20 cover ordinary break, place, no-drop break and break-result confirmation for supported blocks. A normal tree cut sends the original operation once to observing clients. The cutter has already applied the cut locally. The server records the detached tiles and publishes the wood drop to both sockets. |
+| 20 | Active tile patch with two i16 origin coordinates, u8 width, u8 height and a reason byte. Columns contain uncompressed tile state with three flag bytes and optional paint, block, frame, wall and liquid fields. The server uses this for corrections and join catch-up. |
 | 21 | i16 world slot, two f32 position components, two f32 velocity components, i16 stack, prefix byte, flags byte, i16 item ID. Flag 4 adds a shimmer boolean and f32 time. Flag 8 adds the enemy pickup delay byte. The low two bits select spawn ownership. Slot 400 requests a new stack. |
 | 22 | i16 world slot, owner byte, 7-bit reservation time, delayed player byte, 7-bit delay time, two f32 position components. Player 255 represents an unowned stack. |
 | 39, 151 | Release the reserved slot (i16 slot and boolean), or remove the picked-up stack (i16 slot). The connection must own the stack to change or remove it. |

@@ -72,6 +72,23 @@ fn entry_and_player_wire_layouts_roundtrip_and_reject_bad_lengths() {
             position: [18, 20],
             name: Some("Café".into()),
         },
+        Packet::TilePatch(Box::new(terraria_protocol::TilePatch {
+            origin: [24, 52],
+            size: [1, 2],
+            reason: 0,
+            tiles: vec![
+                Tile::default(),
+                Tile {
+                    block: Some(5),
+                    frame: Some((22, 198)),
+                    wall: 310,
+                    block_paint: 11,
+                    wall_paint: 3,
+                    liquid: Some((Liquid::Honey, 40)),
+                    flags: [0, 0x2e, 0x26, 0x1e],
+                },
+            ],
+        })),
         Packet::TileChange {
             action: 20,
             position: [21, 22],

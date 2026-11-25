@@ -6,11 +6,11 @@ use std::{
     sync::{Arc, RwLock},
 };
 use terraria_protocol::Error as ProtocolError;
-use terraria_protocol::section::{TileRun, TileSection, section_tile};
 use terraria_protocol::{
     NetworkText, Packet, WorldData,
     section::{SECTION_HEIGHT, SECTION_WIDTH},
 };
+use terraria_protocol::{TilePatch, section::section_tile};
 use terraria_world::{ChestStack, Tile, World};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
@@ -111,6 +111,9 @@ impl LoadedWorld {
         tile.flags[1] &= !0x70; // slope and half-brick
         tile.flags[2] &= !4; // inactive block
         tile.flags[3] &= !0x0a; // block invisibility and fullbright
+        self.set_tile(pos, tile);
+    }
+    pub fn set_tile(&self, pos: [i16; 2], tile: Tile) {
         let mut edits = self.edits.write().unwrap();
         edits.revision += 1;
         let rev = edits.revision;
@@ -120,17 +123,12 @@ impl LoadedWorld {
             .or_default()
             .insert(pos, (rev, tile));
     }
-    pub fn tile_frame(pos: [i16; 2], tile: Tile) -> Result<Bytes, ProtocolError> {
-        Packet::TileSection(Box::new(TileSection {
-            origin: pos.map(i32::from),
+    pub fn tile_patch(pos: [i16; 2], tile: Tile) -> Result<Bytes, ProtocolError> {
+        Packet::TilePatch(Box::new(TilePatch {
+            origin: pos,
             size: [1, 1],
-            runs: vec![TileRun {
-                tile: section_tile(tile),
-                count: 1,
-            }],
-            chests: vec![],
-            signs: vec![],
-            entities: vec![],
+            reason: 0,
+            tiles: vec![section_tile(tile)],
         }))
         .encode()
     }
@@ -158,7 +156,7 @@ impl LoadedWorld {
             if let Some(changes) = edits.tiles.get(index) {
                 for (&pos, &(revision, tile)) in changes {
                     if revision > since {
-                        out.extend_from_slice(&Self::tile_frame(pos, tile)?);
+                        out.extend_from_slice(&Self::tile_patch(pos, tile)?);
                     }
                 }
             }

@@ -90,6 +90,7 @@ pub enum Packet {
         prefix: u8,
         item: i16,
     },
+    TilePatch(Box<crate::TilePatch>),
     TileChange {
         action: u8,
         position: [i16; 2],
@@ -173,6 +174,7 @@ impl Packet {
             Self::Status { .. } => 9,
             Self::TileSection(_) => 10,
             Self::TileChange { .. } => 17,
+            Self::TilePatch(_) => 20,
             Self::DroppedItem(_) => 21,
             Self::ItemOwner(_) => 22,
             Self::ReleaseItem { .. } => 39,
@@ -280,6 +282,7 @@ impl Packet {
                 let data = r.bytes(r.0.len())?;
                 Self::TileSection(Box::new(crate::section::TileSection::read(data)?))
             }
+            20 if !from_client => Self::TilePatch(Box::new(crate::TilePatch::read(&mut r)?)),
             17 => Self::TileChange {
                 action: r.byte()?,
                 position: r.i16s()?,
@@ -453,6 +456,7 @@ impl Packet {
                 out.put_u8(*flags);
             }
             Self::TileSection(section) => section.write(&mut out)?,
+            Self::TilePatch(patch) => patch.write(&mut out)?,
             Self::TileChange {
                 action,
                 position,

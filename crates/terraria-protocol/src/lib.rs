@@ -8,7 +8,9 @@ pub use movement::Movement;
 mod packet;
 mod server_info;
 mod text;
+mod tile_patch;
 pub use server_info::{PlayerPlatform, ServerInfo};
+pub use tile_patch::TilePatch;
 mod wire;
 
 pub use packet::{Appearance, Equipment, MAX_BUFFS, Packet, Spawn, Vitals};

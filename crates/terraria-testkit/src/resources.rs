@@ -21,6 +21,17 @@ async fn next(stream: &mut TcpStream, id: u8) -> Result<Packet> {
 }
 fn visible_block(log: &[Packet], [x, y]: [i16; 2]) -> Option<Option<u16>> {
     log.iter().rev().find_map(|p| {
+        if let Packet::TilePatch(patch) = p {
+            let dx = i32::from(x) - i32::from(patch.origin[0]);
+            let dy = i32::from(y) - i32::from(patch.origin[1]);
+            if (0..i32::from(patch.size[0])).contains(&dx)
+                && (0..i32::from(patch.size[1])).contains(&dy)
+            {
+                return Some(
+                    patch.tiles[dx as usize * usize::from(patch.size[1]) + dy as usize].block,
+                );
+            }
+        }
         let Packet::TileSection(s) = p else {
             return None;
         };
@@ -280,6 +291,8 @@ mod tree_tests {
     use terraria_world::{Tile, World};
     use tokio::{net::TcpListener, sync::oneshot, time::timeout};
 
+    const GRASS: [i16; 2] = [2101, 233];
+    const SOD: [i16; 2] = [2102, 234];
     const CUT: [i16; 2] = [2100, 232];
     const HARVESTED: [[i16; 2]; 4] = [CUT, [2100, 231], [2099, 231], [2100, 230]];
 
@@ -290,20 +303,35 @@ mod tree_tests {
             ..Tile::default()
         }
     }
-    async fn chopped(stream: &mut TcpStream) -> Result<Packet> {
-        for position in HARVESTED {
-            observe(
-                stream,
-                &Packet::TileChange {
-                    action: 4,
-                    position,
-                    value: 0,
-                    style: 0,
-                },
-            )
-            .await?;
+    async fn wait_for_wood(stream: &mut TcpStream, expected: Option<&Packet>) -> Result<Packet> {
+        let mut cuts = 0;
+        loop {
+            let frame = read_frame(stream).await?.ok_or("EOF waiting for wood")?;
+            match frame.id {
+                17 => {
+                    assert_eq!(Some(&Packet::decode(&frame)?), expected);
+                    cuts += 1;
+                }
+                21 => {
+                    assert_eq!(cuts, usize::from(expected.is_some()));
+                    return Ok(Packet::decode(&frame)?);
+                }
+                10 | 20 => return Err("tree harvest sent a redundant terrain update".into()),
+                _ => {}
+            }
         }
-        next(stream, 21).await
+    }
+
+    async fn assert_no_terrain_update(stream: &mut TcpStream) -> Result<()> {
+        write_packet(stream, &Packet::Ping).await?;
+        loop {
+            let frame = read_frame(stream).await?.ok_or("EOF waiting for ping")?;
+            match frame.id {
+                154 => return Ok(()),
+                10 | 17 | 20 | 21 => return Err(format!("redundant update {}", frame.id).into()),
+                _ => {}
+            }
+        }
     }
 
     #[tokio::test]
@@ -320,6 +348,9 @@ mod tree_tests {
                     ([2099, 231], block(5, Some((66, 0)))),
                     ([2100, 230], block(5, Some((22, 198)))),
                     ([2101, 232], block(5, Some((0, 0)))), // Adjacent trunk belongs to another tree.
+                    (GRASS, block(73, Some((0, 0)))),
+                    ([2101, 234], block(2, None)),
+                    (SOD, block(2, None)),
                 ]),
                 &BTreeMap::new(),
             )
@@ -349,9 +380,19 @@ mod tree_tests {
                 value: 0,
                 style: 0,
             };
+            write_packet(
+                &mut a,
+                &Packet::TileChange {
+                    action: 0,
+                    position: CUT,
+                    value: 1,
+                    style: 0,
+                },
+            )
+            .await?;
             write_packet(&mut a, &request).await?;
-            let a_drop = chopped(&mut a).await?;
-            let b_drop = chopped(&mut b).await?;
+            let a_drop = wait_for_wood(&mut a, None).await?;
+            let b_drop = wait_for_wood(&mut b, Some(&request)).await?;
             assert_eq!(a_drop, b_drop);
             let Packet::DroppedItem(wood) = a_drop else {
                 return Err("missing jungle wood".into());
@@ -366,24 +407,55 @@ mod tree_tests {
             write_packet(&mut a, &Packet::RemoveItem(wood.slot)).await?;
             observe(&mut b, &Packet::RemoveItem(wood.slot)).await?;
 
-            // Another client's concurrent cut, including a retry, must yield no second stack.
+            // Retrying a cut against air must neither drop items nor reframe grass.
             write_packet(&mut b, &request).await?;
-            write_packet(&mut b, &Packet::Ping).await?;
-            loop {
-                let f = read_frame(&mut b)
-                    .await?
-                    .ok_or("second client disconnected")?;
-                assert_ne!(f.id, 21);
-                if f.id == 154 {
-                    break;
-                }
-            }
+            assert_no_terrain_update(&mut b).await?;
+
+            let trim_grass = Packet::TileChange {
+                action: 0,
+                position: GRASS,
+                value: 0,
+                style: 0,
+            };
+            write_packet(&mut a, &trim_grass).await?;
+            observe(&mut b, &trim_grass).await?;
+            assert_no_terrain_update(&mut a).await?;
+
+            // An initial hit strips sod once. Repeating the hit against dirt stays quiet.
+            let strip_sod = Packet::TileChange {
+                action: 0,
+                position: SOD,
+                value: 1,
+                style: 0,
+            };
+            write_packet(&mut a, &strip_sod).await?;
+            observe(&mut b, &strip_sod).await?;
+            write_packet(&mut a, &strip_sod).await?;
+            assert_no_terrain_update(&mut a).await?;
+            assert_no_terrain_update(&mut b).await?;
+
+            // A genuine correction uses a tile patch and leaves the surrounding section intact.
+            write_packet(
+                &mut a,
+                &Packet::TileChange {
+                    action: 1,
+                    position: [2101, 232],
+                    value: 1,
+                    style: 0,
+                },
+            )
+            .await?;
+            let patch = next(&mut a, 20).await?;
+            assert_eq!(visible_block(&[patch], [2101, 232]), Some(Some(5)));
 
             let mut log = Vec::new();
             let (_rejoined, _, _, _) = join_capturing(addr, None, &mut log).await?;
             for position in HARVESTED {
                 assert_eq!(visible_block(&log, position), Some(None));
             }
+            assert_eq!(visible_block(&log, GRASS), Some(None));
+            assert_eq!(visible_block(&log, SOD), Some(Some(0)));
+            assert_eq!(visible_block(&log, [2101, 234]), Some(Some(2)));
             for position in [[2100, 233], [2101, 232]] {
                 assert_eq!(visible_block(&log, position), Some(Some(5)));
             }

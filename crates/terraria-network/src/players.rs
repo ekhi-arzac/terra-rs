@@ -302,40 +302,47 @@ impl Roster {
                         let Some(tile) = world.tile(position) else {
                             return Ok(());
                         };
-                        if action != 1 && trees::is_tree(tile) {
-                            if value == 1 {
+                        let breaking = action != 1;
+                        if breaking && value == 1 {
+                            // Incomplete hits on grass-covered blocks can still strip the sod.
+                            // Relay state changes only, so harmless hits do not reframe foliage.
+                            if action == 20 {
+                                peer.queue(tile_break_result(position, tile.block.is_some())?);
+                            } else if let Some(soil) = tile.block.and_then(soil_under_grass) {
+                                world.set_tile(
+                                    position,
+                                    terraria_world::Tile {
+                                        block: Some(soil),
+                                        ..tile
+                                    },
+                                );
                                 self.send(Some(slot), packet.encode()?);
-                            } else {
-                                let harvest = trees::harvest(world, position, tile);
-                                let mut updates = BytesMut::new();
-                                for &(pos, before) in &harvest.tiles {
-                                    world.change_block(pos, before, None);
-                                    updates.extend_from_slice(
-                                        &Packet::TileChange {
-                                            action: 4,
-                                            position: pos,
-                                            value: 0,
-                                            style: 0,
-                                        }
-                                        .encode()?,
-                                    );
-                                }
-                                if action == 20 {
-                                    updates.extend_from_slice(&packet.encode()?);
-                                }
-                                self.send(None, updates.freeze());
-                                if action != 4 {
-                                    let mut remaining = harvest.tiles.len();
-                                    while remaining > 0 {
-                                        let stack = remaining.min(9_999);
-                                        self.spawn_resource(
-                                            slot,
-                                            position,
-                                            harvest.wood,
-                                            stack as i16,
-                                        )?;
-                                        remaining -= stack;
-                                    }
+                            }
+                            return Ok(());
+                        }
+                        if breaking && tile.block.is_none() && action != 20 {
+                            // Redundant cuts against air have no state to repair.
+                            return Ok(());
+                        }
+                        if breaking && trees::is_tree(tile) {
+                            let harvest = trees::harvest(world, position, tile);
+                            for &(pos, before) in &harvest.tiles {
+                                world.change_block(pos, before, None);
+                            }
+                            // The cutter applied the cut locally. Each peer only needs the
+                            // original operation to remove its attached branches and trunk.
+                            self.send((action != 20).then_some(slot), packet.encode()?);
+                            if action != 4 {
+                                let mut remaining = harvest.tiles.len();
+                                while remaining > 0 {
+                                    let stack = remaining.min(9_999);
+                                    self.spawn_resource(
+                                        slot,
+                                        position,
+                                        harvest.wood,
+                                        stack as i16,
+                                    )?;
+                                    remaining -= stack;
                                 }
                             }
                             return Ok(());
@@ -346,7 +353,11 @@ impl Roster {
                             {
                                 Some(Some(value as u16))
                             }
-                            0 | 4 | 20 if value != 1 && tile.block.and_then(resource).is_some() => {
+                            0 | 4 | 20
+                                if tile.block.is_some_and(|block| {
+                                    resource(block).is_some() || is_ground_cover(block)
+                                }) =>
+                            {
                                 Some(None)
                             }
                             _ => None,
@@ -364,21 +375,9 @@ impl Roster {
                                 self.spawn_resource(slot, position, item, 1)?;
                             }
                         } else if action == 20 {
-                            let reply = Packet::TileChange {
-                                action,
-                                position,
-                                value: i16::from(tile.block.is_some()),
-                                style: 0,
-                            }
-                            .encode()?;
-                            peer.queue(reply);
-                        } else if action != 1
-                            && value == 1
-                            && tile.block.and_then(resource).is_some()
-                        {
-                            self.send(Some(slot), packet.encode()?);
+                            peer.queue(tile_break_result(position, tile.block.is_some())?);
                         } else {
-                            peer.queue(LoadedWorld::tile_frame(position, tile)?);
+                            peer.queue(LoadedWorld::tile_patch(position, tile)?);
                         }
                     }
                     Packet::RequestChest(position) => {
@@ -542,6 +541,33 @@ impl Roster {
         }
         Ok(())
     }
+}
+
+fn tile_break_result(position: [i16; 2], remains: bool) -> Result<Bytes, ProtocolError> {
+    Packet::TileChange {
+        action: 20,
+        position,
+        value: i16::from(remains),
+        style: 0,
+    }
+    .encode()
+}
+
+fn soil_under_grass(block: u16) -> Option<u16> {
+    match block {
+        2 | 23 | 109 | 199 | 477 | 492 => Some(0),
+        60 | 70 | 661 | 662 => Some(59),
+        633 => Some(57),
+        _ => None,
+    }
+}
+
+// Ordinary single-cell grass and background plants.
+fn is_ground_cover(block: u16) -> bool {
+    matches!(
+        block,
+        3 | 24 | 61 | 71 | 73 | 74 | 110 | 113 | 201 | 530 | 637
+    )
 }
 
 // Direct single-block drops from release 326 WorldGen.KillTile_GetItemDrops.
