@@ -1,6 +1,6 @@
 # Native Terraria server
 
-This Rust workspace implements the direct-IP join protocol of Terraria **1.4.6**. Headless clients can join an existing Terraria world, receive terrain and chest contents, see other players move, exchange chat and reconnect. Players can share dropped stacks, use existing chests, and place and mine basic resource blocks, including dirt, stone, wood blocks and early ores. Tree harvesting, NPC simulation and combat remain under development.
+This Rust workspace implements the direct-IP join protocol of Terraria **1.4.6**. Headless clients can join an existing Terraria world, receive terrain and chest contents, see other players move, exchange chat and reconnect. Players can share dropped stacks, use existing chests, and place and mine basic resource blocks, including dirt, stone, wood blocks and early ores. Players can also chop ordinary trees and palms for wood. NPC simulation and combat remain under development.
 
 ```sh
 cargo run -p terraria-server -- --config server.example.toml

@@ -19,6 +19,27 @@ async fn next(stream: &mut TcpStream, id: u8) -> Result<Packet> {
         }
     }
 }
+fn visible_block(log: &[Packet], [x, y]: [i16; 2]) -> Option<Option<u16>> {
+    log.iter().rev().find_map(|p| {
+        let Packet::TileSection(s) = p else {
+            return None;
+        };
+        let dx = i32::from(x) - s.origin[0];
+        let dy = i32::from(y) - s.origin[1];
+        if !(0..i32::from(s.size[0])).contains(&dx) || !(0..i32::from(s.size[1])).contains(&dy) {
+            return None;
+        }
+        let mut remaining = dy as u32 * u32::from(s.size[0]) + dx as u32;
+        for run in &s.runs {
+            if remaining < u32::from(run.count) {
+                return Some(run.tile.block);
+            }
+            remaining -= u32::from(run.count);
+        }
+        None
+    })
+}
+
 pub(super) async fn run(
     addr: SocketAddr,
     password: Option<&str>,
@@ -201,24 +222,7 @@ pub(super) async fn run(
     .await?;
     let mut log = Vec::new();
     let (_rejoined, _, _, _) = super::peers::join_capturing(addr, password, &mut log).await?;
-    let mut saw_air = false;
-    for p in &log {
-        if let Packet::TileSection(s) = p {
-            let dx = i32::from(cell[0]) - s.origin[0];
-            let dy = i32::from(cell[1]) - s.origin[1];
-            if (0..i32::from(s.size[0])).contains(&dx) && (0..i32::from(s.size[1])).contains(&dy) {
-                let mut index = dy as usize * usize::from(s.size[0]) + dx as usize;
-                for run in &s.runs {
-                    if index < usize::from(run.count) {
-                        saw_air = run.tile.block.is_none();
-                        break;
-                    }
-                    index -= usize::from(run.count);
-                }
-            }
-        }
-    }
-    if !saw_air || !log.contains(&edit) || !log.iter().any(|p| matches!(p,Packet::DroppedItem(i) if Some(i.slot) == resource && i.item == 3 && i.stack == 1)) {
+    if visible_block(&log, cell) != Some(None) || !log.contains(&edit) || !log.iter().any(|p| matches!(p,Packet::DroppedItem(i) if Some(i.slot) == resource && i.item == 3 && i.stack == 1)) {
         return Err("rejoin did not reproduce mined cell, dropped stone and chest contents".into());
     }
     println!("Observed placement, mining, a stone drop, and the tile, chest and item on rejoin.");
@@ -265,5 +269,134 @@ mod tests {
         let saved = &reloaded.chests()[0].items[0];
         assert_eq!((saved.item_type, saved.stack), (3, 17));
         assert_eq!(reloaded.tile(2099, 231).unwrap().block, None);
+    }
+}
+
+#[cfg(test)]
+mod tree_tests {
+    use super::super::peers::join_capturing;
+    use super::*;
+    use std::{collections::BTreeMap, time::Duration};
+    use terraria_world::{Tile, World};
+    use tokio::{net::TcpListener, sync::oneshot, time::timeout};
+
+    const CUT: [i16; 2] = [2100, 232];
+    const HARVESTED: [[i16; 2]; 4] = [CUT, [2100, 231], [2099, 231], [2100, 230]];
+
+    fn block(ty: u16, frame: Option<(i16, i16)>) -> Tile {
+        Tile {
+            block: Some(ty),
+            frame,
+            ..Tile::default()
+        }
+    }
+    async fn chopped(stream: &mut TcpStream) -> Result<Packet> {
+        for position in HARVESTED {
+            observe(
+                stream,
+                &Packet::TileChange {
+                    action: 4,
+                    position,
+                    value: 0,
+                    style: 0,
+                },
+            )
+            .await?;
+        }
+        next(stream, 21).await
+    }
+
+    #[tokio::test]
+    async fn tree_cut_syncs_wood_and_removes_only_the_detached_tiles() {
+        let world =
+            World::parse(include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec()).unwrap();
+        let world = world
+            .with_edits(
+                &BTreeMap::from([
+                    ([2100, 234], block(60, None)), // Jungle grass under the uncut stump.
+                    ([2100, 233], block(5, Some((0, 22)))),
+                    (CUT, block(5, Some((0, 22)))),
+                    ([2100, 231], block(5, Some((44, 0)))),
+                    ([2099, 231], block(5, Some((66, 0)))),
+                    ([2100, 230], block(5, Some((22, 198)))),
+                    ([2101, 232], block(5, Some((0, 0)))), // Adjacent trunk belongs to another tree.
+                ]),
+                &BTreeMap::new(),
+            )
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("trees.wld");
+        world.save(&file).unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (stop, end) = oneshot::channel();
+        let task = tokio::spawn(terraria_network::serve_with_save(
+            listener,
+            3.try_into().unwrap(),
+            String::new(),
+            Some(world),
+            Some(file.clone()),
+            async {
+                let _ = end.await;
+            },
+        ));
+        timeout(Duration::from_secs(10), async {
+            let (mut a, first, _, _) = join(addr, None).await?;
+            let (mut b, _, _, _) = join(addr, None).await?;
+            let request = Packet::TileChange {
+                action: 0,
+                position: CUT,
+                value: 0,
+                style: 0,
+            };
+            write_packet(&mut a, &request).await?;
+            let a_drop = chopped(&mut a).await?;
+            let b_drop = chopped(&mut b).await?;
+            assert_eq!(a_drop, b_drop);
+            let Packet::DroppedItem(wood) = a_drop else {
+                return Err("missing jungle wood".into());
+            };
+            assert_eq!((wood.item, wood.stack), (620, 4));
+            match next(&mut a, 22).await? {
+                Packet::ItemOwner(owner) => {
+                    assert_eq!((owner.slot, owner.player), (wood.slot, first))
+                }
+                _ => unreachable!(),
+            }
+            write_packet(&mut a, &Packet::RemoveItem(wood.slot)).await?;
+            observe(&mut b, &Packet::RemoveItem(wood.slot)).await?;
+
+            // Another client's concurrent cut, including a retry, must yield no second stack.
+            write_packet(&mut b, &request).await?;
+            write_packet(&mut b, &Packet::Ping).await?;
+            loop {
+                let f = read_frame(&mut b)
+                    .await?
+                    .ok_or("second client disconnected")?;
+                assert_ne!(f.id, 21);
+                if f.id == 154 {
+                    break;
+                }
+            }
+
+            let mut log = Vec::new();
+            let (_rejoined, _, _, _) = join_capturing(addr, None, &mut log).await?;
+            for position in HARVESTED {
+                assert_eq!(visible_block(&log, position), Some(None));
+            }
+            for position in [[2100, 233], [2101, 232]] {
+                assert_eq!(visible_block(&log, position), Some(Some(5)));
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        stop.send(()).unwrap();
+        task.await.unwrap().unwrap();
+        let saved = World::load(file).unwrap();
+        for [x, y] in HARVESTED {
+            assert_eq!(saved.tile(x as u32, y as u32).unwrap().block, None);
+        }
     }
 }

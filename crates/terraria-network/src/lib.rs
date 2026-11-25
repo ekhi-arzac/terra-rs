@@ -5,6 +5,7 @@ use players::{Event, Roster};
 use tokio::sync::mpsc;
 mod session;
 mod terrain;
+mod trees;
 pub use session::{Character, Phase, Session};
 use terrain::LoadedWorld;
 

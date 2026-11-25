@@ -1,6 +1,7 @@
 //! The roster owner serializes membership and player updates. Socket writes never run on it.
 use crate::drops::Drops;
 use crate::terrain::LoadedWorld;
+use crate::trees;
 use crate::{Character, Error, read_frame, write_packet};
 use bytes::{Bytes, BytesMut};
 use std::{collections::BTreeMap, io, time::Duration};
@@ -122,6 +123,28 @@ impl Roster {
             world,
             player_count,
         }
+    }
+    fn spawn_resource(
+        &mut self,
+        slot: u8,
+        position: [i16; 2],
+        item: i16,
+        stack: i16,
+    ) -> Result<(), ProtocolError> {
+        self.spawn_drop(
+            slot,
+            terraria_protocol::DroppedItem {
+                slot: terraria_protocol::NEW_ITEM,
+                position: position.map(|n| f32::from(n) * 16.0),
+                velocity: [0.0; 2],
+                stack,
+                prefix: 0,
+                ownership: 1,
+                item,
+                shimmer: None,
+                enemy_delay: None,
+            },
+        )
     }
     fn spawn_drop(
         &mut self,
@@ -279,6 +302,44 @@ impl Roster {
                         let Some(tile) = world.tile(position) else {
                             return Ok(());
                         };
+                        if action != 1 && trees::is_tree(tile) {
+                            if value == 1 {
+                                self.send(Some(slot), packet.encode()?);
+                            } else {
+                                let harvest = trees::harvest(world, position, tile);
+                                let mut updates = BytesMut::new();
+                                for &(pos, before) in &harvest.tiles {
+                                    world.change_block(pos, before, None);
+                                    updates.extend_from_slice(
+                                        &Packet::TileChange {
+                                            action: 4,
+                                            position: pos,
+                                            value: 0,
+                                            style: 0,
+                                        }
+                                        .encode()?,
+                                    );
+                                }
+                                if action == 20 {
+                                    updates.extend_from_slice(&packet.encode()?);
+                                }
+                                self.send(None, updates.freeze());
+                                if action != 4 {
+                                    let mut remaining = harvest.tiles.len();
+                                    while remaining > 0 {
+                                        let stack = remaining.min(9_999);
+                                        self.spawn_resource(
+                                            slot,
+                                            position,
+                                            harvest.wood,
+                                            stack as i16,
+                                        )?;
+                                        remaining -= stack;
+                                    }
+                                }
+                            }
+                            return Ok(());
+                        }
                         let change = match action {
                             1 if tile.block.is_none()
                                 && u16::try_from(value).ok().and_then(resource).is_some() =>
@@ -300,20 +361,7 @@ impl Roster {
                                 && action != 4
                                 && let Some(item) = tile.block.and_then(resource)
                             {
-                                self.spawn_drop(
-                                    slot,
-                                    terraria_protocol::DroppedItem {
-                                        slot: terraria_protocol::NEW_ITEM,
-                                        position: position.map(|n| f32::from(n) * 16.0),
-                                        velocity: [0.0; 2],
-                                        stack: 1,
-                                        prefix: 0,
-                                        ownership: 1,
-                                        item,
-                                        shimmer: None,
-                                        enemy_delay: None,
-                                    },
-                                )?;
+                                self.spawn_resource(slot, position, item, 1)?;
                             }
                         } else if action == 20 {
                             let reply = Packet::TileChange {
