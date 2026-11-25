@@ -1086,3 +1086,198 @@ mod save_tests {
             .unwrap();
     }
 }
+
+#[cfg(test)]
+mod container_tests {
+    use super::*;
+    use std::time::Duration;
+    use terraria_network::{Administration, ConsoleCommand};
+    use terraria_world::World;
+    use tokio::{
+        net::TcpListener,
+        sync::mpsc,
+        time::{sleep, timeout},
+    };
+
+    fn chest(action: u8, position: [i16; 2], id: i16) -> Packet {
+        Packet::ChestUpdate {
+            action,
+            position,
+            style: 0,
+            chest: id,
+        }
+    }
+    fn stack(id: i16, n: i16) -> Packet {
+        Packet::ChestItem {
+            chest: id,
+            slot: 5,
+            stack: n,
+            prefix: 0,
+            item: 3,
+        }
+    }
+
+    #[tokio::test]
+    async fn chest_slots_remain_stable_across_removal_compaction_and_reuse() {
+        timeout(Duration::from_secs(10), run())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    async fn run() -> Result<()> {
+        let world = World::parse(include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec())?;
+        let initial_revision = world.metadata().revision;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("containers.wld");
+        world.save(&path)?;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let addr = listener.local_addr()?;
+        let (admin, commands) = mpsc::channel(4);
+        let task = tokio::spawn(terraria_network::serve_managed(
+            listener,
+            3.try_into()?,
+            String::new(),
+            Some(world),
+            Some(path.clone()),
+            Administration {
+                autosave_seconds: None,
+                commands,
+            },
+            std::future::pending(),
+        ));
+        let (mut a, _, _, _) = join(addr, None).await?;
+        let (mut b, _, _, _) = join(addr, None).await?;
+        for x in [2102, 2103, 2199, 2200] {
+            let floor = Packet::TileChange {
+                action: 1,
+                position: [x, 234],
+                value: 1,
+                style: 0,
+            };
+            write_packet(&mut a, &floor).await?;
+            observe_edit(&mut b, &floor).await?;
+        }
+        for (x, id) in [(2102, 1), (2199, 2)] {
+            write_packet(&mut a, &chest(0, [x, 233], 1234)).await?;
+            for socket in [&mut a, &mut b] {
+                observe(socket, &chest(0, [x, 233], id)).await?;
+                let patch = next(socket, 20).await?;
+                for dx in 0..2 {
+                    for dy in 0..2 {
+                        let cell =
+                            visible_tile(std::slice::from_ref(&patch), [x + dx, 232 + dy]).unwrap();
+                        assert_eq!(
+                            (cell.block, cell.frame),
+                            (Some(21), Some((dx * 18, dy * 18)))
+                        );
+                    }
+                }
+            }
+        }
+        write_packet(&mut a, &Packet::RequestChest([2199, 232])).await?;
+        assert!(matches!(
+            next(&mut a, 155).await?,
+            Packet::ChestSize {
+                index: 2,
+                capacity: 40
+            }
+        ));
+        next(&mut a, 33).await?;
+        write_packet(&mut a, &stack(2, 17)).await?;
+        observe(&mut b, &stack(2, 17)).await?;
+        write_packet(
+            &mut a,
+            &Packet::ChestState {
+                chest: -1,
+                position: [0; 2],
+                name: Some("Ore".into()),
+            },
+        )
+        .await?;
+        observe(
+            &mut b,
+            &Packet::ChestName {
+                chest: 2,
+                position: [2199, 232],
+                name: "Ore".into(),
+            },
+        )
+        .await?;
+        // Mining any part of a full chest or either of its supports leaves its contents intact.
+        write_packet(&mut b, &chest(1, [2200, 233], 1)).await?;
+        observe(&mut b, &stack(2, 17)).await?;
+        write_packet(
+            &mut b,
+            &Packet::TileChange {
+                action: 0,
+                position: [2199, 234],
+                value: 0,
+                style: 0,
+            },
+        )
+        .await?;
+        let correction = next(&mut b, 20).await?;
+        assert_eq!(
+            visible_tile(&[correction], [2199, 234]).unwrap().block,
+            Some(1)
+        );
+        let cut = chest(1, [2103, 233], 2);
+        tokio::try_join!(write_packet(&mut a, &cut), write_packet(&mut b, &cut))?;
+        for socket in [&mut a, &mut b] {
+            observe(socket, &chest(1, [2102, 232], 1)).await?;
+            let drop = next(socket, 21).await?;
+            assert!(matches!(drop,Packet::DroppedItem(i) if (i.item,i.stack)==(48,1)));
+            write_packet(socket, &Packet::Ping).await?;
+            loop {
+                let frame = read_frame(socket)
+                    .await?
+                    .ok_or("EOF after contested chest break")?;
+                assert_ne!(frame.id, 21, "duplicate chest drop");
+                if frame.id == 154 {
+                    break;
+                }
+            }
+        }
+        admin.send(ConsoleCommand::Save).await?;
+        loop {
+            let image = World::load(&path)?;
+            if image.metadata().revision > initial_revision {
+                assert_eq!(image.chests().len(), 2);
+                assert_eq!(image.chests()[1].name, "Ore");
+                assert_eq!(image.chests()[1].items[0].stack, 17);
+                break;
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        // The disk writer assigned the surviving new chest file index 1. Online it is still index 2.
+        write_packet(&mut b, &Packet::RequestChest([2199, 232])).await?;
+        observe(&mut b, &stack(2, 17)).await?;
+        next(&mut b, 33).await?;
+        write_packet(&mut b, &stack(2, 31)).await?;
+        observe(&mut a, &stack(2, 31)).await?;
+        write_packet(&mut a, &chest(0, [2102, 233], 0)).await?;
+        observe(&mut b, &chest(0, [2102, 233], 1)).await?;
+        let mut log = Vec::new();
+        let (_c, _, _, _) = super::super::peers::join_capturing(addr, None, &mut log).await?;
+        assert!(log.contains(&stack(2, 31)));
+        assert!(log.iter().any(|p|matches!(p,Packet::TileSection(s) if s.chests.iter().any(|c|c.index==2 && c.text=="Ore"))));
+        admin.send(ConsoleCommand::Exit).await?;
+        task.await??;
+        let saved = World::load(&path)?;
+        assert_eq!(saved.chests().len(), 3);
+        let ore = saved
+            .chests()
+            .iter()
+            .find(|c| c.position == (2199, 232))
+            .unwrap();
+        assert_eq!((&*ore.name, ore.items[0].stack), ("Ore", 31));
+        assert_eq!(saved.tile(2200, 233)?.frame, Some((18, 18)));
+        assert!(
+            saved
+                .chests()
+                .iter()
+                .any(|c| c.position == (2102, 232) && c.items.is_empty())
+        );
+        Ok(())
+    }
+}

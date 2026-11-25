@@ -134,6 +134,12 @@ pub enum Packet {
         state: u8,
     },
     RequestChest([i16; 2]),
+    ChestUpdate {
+        action: u8,
+        position: [i16; 2],
+        style: i16,
+        chest: i16,
+    },
     RequestChestName {
         chest: i16,
         position: [i16; 2],
@@ -224,6 +230,7 @@ impl Packet {
             Self::RequestNpcName(_) | Self::NpcName { .. } => 56,
             Self::NpcHome { .. } => 60,
             Self::RequestChest(_) => 31,
+            Self::ChestUpdate { .. } => 34,
             Self::RequestChestName { .. } | Self::ChestName { .. } => 69,
             Self::ChestState { .. } => 33,
             Self::PlayerChest { .. } => 80,
@@ -376,6 +383,12 @@ impl Packet {
                     name,
                 }
             }
+            34 => Self::ChestUpdate {
+                action: r.byte()?,
+                position: r.i16s()?,
+                style: r.i16()?,
+                chest: r.i16()?,
+            },
             69 => {
                 let chest = r.i16()?;
                 let position = r.i16s()?;
@@ -574,6 +587,19 @@ impl Packet {
                 if let Self::ChestName { name, .. } = self {
                     put_string(&mut out, name)?;
                 }
+            }
+            Self::ChestUpdate {
+                action,
+                position,
+                style,
+                chest,
+            } => {
+                out.put_u8(*action);
+                for c in position {
+                    out.put_i16_le(*c);
+                }
+                out.put_i16_le(*style);
+                out.put_i16_le(*chest);
             }
             Self::NpcSync(npc) => npc.write(&mut out)?,
             Self::NpcBuffs { slot, buffs } => {

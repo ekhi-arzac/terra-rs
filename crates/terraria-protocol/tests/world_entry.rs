@@ -63,6 +63,12 @@ fn entry_and_player_wire_layouts_roundtrip_and_reject_bad_lengths() {
         },
         Packet::RemoveItem(399),
         Packet::RequestChest([2095, 232]),
+        Packet::ChestUpdate {
+            action: 1,
+            position: [2095, 232],
+            style: 0,
+            chest: 256,
+        },
         Packet::RequestChestName {
             chest: -1,
             position: [2, 4],

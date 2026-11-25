@@ -58,14 +58,14 @@ pub struct Metadata {
     pub daytime: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct StoredItem {
     pub slot: u32,
     pub stack: i16,
     pub item_type: i32,
     pub prefix: u8,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Chest {
     pub position: (i32, i32),
     pub name: String,

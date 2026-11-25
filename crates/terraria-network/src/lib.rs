@@ -1,6 +1,7 @@
 //! Bounded TCP transport and connection state for direct-IP clients.
 mod admin;
 pub use admin::{Administration, ConsoleCommand};
+mod containers;
 mod doors;
 mod drops;
 mod players;

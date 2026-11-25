@@ -70,7 +70,7 @@ pub(super) async fn run(
                     }
                     Packet::ChestSize { index, capacity } => {
                         if !(0..=256).contains(capacity)
-                            || sizes.insert(*index, *capacity).is_some()
+                            || (sizes.insert(*index, *capacity).is_some() && !invited)
                         {
                             return Err("invalid chest size or duplicate chest".into());
                         }

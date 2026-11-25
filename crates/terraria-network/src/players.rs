@@ -247,6 +247,10 @@ impl Roster {
     ) -> Result<(), ProtocolError> {
         let (bounds, bytes) = world.footprint_patch(changes)?;
         world.commit_tiles(changes, Some(bounds));
+        self.send_footprint(changes, bytes);
+        Ok(())
+    }
+    fn send_footprint(&mut self, changes: &[([i16; 2], terraria_world::Tile)], bytes: Bytes) {
         for player in self.peers.values_mut() {
             if changes
                 .iter()
@@ -255,7 +259,128 @@ impl Roster {
                 player.queue(bytes.clone());
             }
         }
-        Ok(())
+    }
+
+    fn chest_update(
+        &mut self,
+        slot: u8,
+        action: u8,
+        pos: [i16; 2],
+        style: i16,
+        drop_item: bool,
+    ) -> Result<bool, ProtocolError> {
+        use crate::containers::{chest_cells, wooden_chest_origin};
+        let Some(world) = self.world.clone() else {
+            return Ok(false);
+        };
+        let place = action == 0;
+        let origin = match action {
+            0 if style == 0 => pos[1].checked_sub(1).map(|y| [pos[0], y]),
+            1 => wooden_chest_origin(&world, pos),
+            _ => None,
+        };
+        let Some(origin) = origin else {
+            return Ok(false);
+        };
+        let Some(before) = chest_cells(&world, origin) else {
+            return Ok(false);
+        };
+        let Some(actor) = self.peers.get(&slot) else {
+            return Ok(false);
+        };
+        let id = world.chest_at(origin);
+        let valid = before.iter().all(|&(cell, tile)| {
+            if !actor.sections.contains(&LoadedWorld::section_at(cell)) {
+                return false;
+            }
+            if place {
+                tile.block.is_none_or(is_ground_cover)
+                    && !matches!(tile.liquid, Some((terraria_world::Liquid::Lava, _)))
+            } else {
+                wooden_chest_origin(&world, cell) == Some(origin)
+            }
+        }) && if place {
+            before
+                .iter()
+                .filter(|(cell, _)| cell[1] == pos[1])
+                .all(|(cell, _)| {
+                    cell[1]
+                        .checked_add(1)
+                        .and_then(|y| world.tile([cell[0], y]))
+                        .is_some_and(crate::terrain::is_solid_floor)
+                })
+        } else {
+            id.is_some() && !self.peers.values().any(|p| p.chest == id)
+        };
+        if valid {
+            let changes = before
+                .iter()
+                .map(|&(cell, tile)| {
+                    let mut tile = LoadedWorld::with_block(tile, place.then_some(21));
+                    if place {
+                        tile.frame = Some(((cell[0] - origin[0]) * 18, (cell[1] - origin[1]) * 18));
+                    }
+                    (cell, tile)
+                })
+                .collect::<Vec<_>>();
+            let (bounds, patch) = world.footprint_patch(&changes)?;
+            if let Some(chest) = world.commit_chest(origin, place, &changes, bounds) {
+                let mut batch = BytesMut::new();
+                batch.extend_from_slice(
+                    &Packet::ChestUpdate {
+                        action,
+                        position: if place { pos } else { origin },
+                        style: 0,
+                        chest,
+                    }
+                    .encode()?,
+                );
+                batch.extend_from_slice(&patch);
+                self.send_footprint(&changes, batch.freeze());
+                if !place && drop_item {
+                    self.spawn_resource(slot, origin, 48, 1)?;
+                }
+                return Ok(true);
+            }
+        }
+        let mut correction = BytesMut::new();
+        if place {
+            correction.extend_from_slice(
+                &Packet::ChestUpdate {
+                    action,
+                    position: pos,
+                    style,
+                    chest: -1,
+                }
+                .encode()?,
+            );
+        }
+        correction.extend_from_slice(&world.footprint_patch(&before)?.1);
+        // A rejected prediction can locally remove an occupied chest. Restore its index and contents.
+        let mut overlapping = BTreeSet::new();
+        for &(cell, _) in &before {
+            if let Some(pos) = wooden_chest_origin(&world, cell)
+                && let Some(chest) = world.chest_at(pos)
+            {
+                overlapping.insert(chest);
+            }
+        }
+        if let Some(chest) = id {
+            overlapping.insert(chest);
+        }
+        for chest in overlapping {
+            if let Some(name) = world.chest_name(chest) {
+                correction.extend_from_slice(&name.encode()?);
+            }
+            correction.extend_from_slice(&world.chest_contents(chest)?);
+        }
+        if let Some(actor) = self.peers.get_mut(&slot) {
+            actor.queue(correction.freeze());
+        }
+        if place && drop_item {
+            self.spawn_resource(slot, pos, 48, 1)?;
+        }
+        Ok(false)
     }
 
     fn place_station(
@@ -453,6 +578,7 @@ impl Roster {
                 if let Packet::TileChange { position, .. }
                 | Packet::ObjectPlacement { position, .. }
                 | Packet::DoorToggle { position, .. }
+                | Packet::ChestUpdate { position, .. }
                 | Packet::RequestChestName { position, .. }
                 | Packet::RequestChest(position) = &packet
                     && !peer.sections.contains(&LoadedWorld::section_at(*position))
@@ -470,6 +596,14 @@ impl Roster {
                                 peer.sections.insert(index);
                             }
                         }
+                    }
+                    Packet::ChestUpdate {
+                        action,
+                        position,
+                        style,
+                        ..
+                    } => {
+                        self.chest_update(slot, action, position, style, true)?;
                     }
                     Packet::RequestNpcName(index) => {
                         if let Some(resident) = self.world.as_ref().and_then(|world| {
@@ -581,6 +715,30 @@ impl Roster {
                         }
                         if breaking && tile.block.is_none() && action != 20 {
                             // Redundant cuts against air have no state to repair.
+                            return Ok(());
+                        }
+                        if breaking
+                            && crate::containers::wooden_chest_origin(&world, position).is_some()
+                        {
+                            let removed = self.chest_update(slot, 1, position, 0, action != 4)?;
+                            if action == 20
+                                && let Some(peer) = self.peers.get_mut(&slot)
+                            {
+                                peer.queue(tile_break_result(position, !removed)?);
+                            }
+                            return Ok(());
+                        }
+                        if breaking
+                            && let Some(y) = position[1].checked_sub(2)
+                            && [Some(position[0]), position[0].checked_sub(1)]
+                                .into_iter()
+                                .flatten()
+                                .any(|x| world.chest_at([x, y]).is_some())
+                        {
+                            if action == 20 {
+                                peer.queue(tile_break_result(position, true)?);
+                            }
+                            peer.queue(LoadedWorld::tile_patch(position, tile)?);
                             return Ok(());
                         }
                         if breaking
@@ -939,6 +1097,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 31
             | 32
             | 33
+            | 34
             | 36
             | 39
             | 42
@@ -967,7 +1126,8 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
                 && i.stack >= 0 => {}
         Packet::ReleaseItem { slot: index, .. } | Packet::RemoveItem(index)
             if (0..terraria_protocol::NEW_ITEM).contains(index) => {}
-        Packet::RequestChestName { .. }
+        Packet::ChestUpdate { .. }
+        | Packet::RequestChestName { .. }
         | Packet::RequestNpcName(_)
         | Packet::RequestChest(_)
         | Packet::ChestState { .. } => {}

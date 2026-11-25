@@ -1,4 +1,4 @@
-use super::{Error, SECTION_COUNT, Tile, World};
+use super::{Chest, Error, SECTION_COUNT, Tile, World};
 use bytes::{BufMut, BytesMut};
 use std::{
     collections::BTreeMap,
@@ -30,6 +30,25 @@ impl World {
         blocks: &BTreeMap<[i16; 2], Tile>,
         slots: &BTreeMap<(i16, u8), ChestStack>,
         names: &BTreeMap<i16, String>,
+    ) -> Result<World, Error> {
+        self.with_changes(blocks, slots, names, &BTreeMap::new())
+    }
+
+    /// Container positions survive file compaction; network slot numbers are session-local.
+    pub fn with_containers(
+        &self,
+        blocks: &BTreeMap<[i16; 2], Tile>,
+        containers: &BTreeMap<(i32, i32), Option<Chest>>,
+    ) -> Result<World, Error> {
+        self.with_changes(blocks, &BTreeMap::new(), &BTreeMap::new(), containers)
+    }
+
+    fn with_changes(
+        &self,
+        blocks: &BTreeMap<[i16; 2], Tile>,
+        slots: &BTreeMap<(i16, u8), ChestStack>,
+        names: &BTreeMap<i16, String>,
+        containers: &BTreeMap<(i32, i32), Option<Chest>>,
     ) -> Result<World, Error> {
         if names.iter().any(|(&index, name)| {
             self.chests.get(index as usize).is_none() || name.encode_utf16().count() > 20
@@ -92,13 +111,26 @@ impl World {
         }
         offsets[2] = out.len();
         let mut r = Reader(&self.data[self.offsets[2]..self.offsets[3]]);
-        out.put_i16_le(r.i16()?);
+        r.i16()?;
+        let count_offset = out.len();
+        out.put_i16_le(0);
+        let mut count = 0;
+        let mut replacements: BTreeMap<_, _> = containers.iter().collect();
         let mut written = 0;
         for (index, chest) in self.chests.iter().enumerate() {
             let header = r.0;
             let position = r.bytes(8)?;
             r.string()?;
             let capacity = r.i32()?;
+            if let Some(update) = replacements.remove(&chest.position) {
+                r.bytes(chest.capacity as usize * 2 + chest.items.len() * 5)?;
+                if let Some(new) = update {
+                    write_container(&mut out, chest.position, new, self)?;
+                    count += 1;
+                }
+                continue;
+            }
+            count += 1;
             if let Some(name) = names.get(&(index as i16)) {
                 out.extend_from_slice(position);
                 terraria_binary::put_string(&mut out, name);
@@ -134,6 +166,16 @@ impl World {
                 }
             }
         }
+        for (&pos, update) in replacements {
+            if let Some(new) = update {
+                write_container(&mut out, pos, new, self)?;
+                count += 1;
+            }
+        }
+        if count > 8000 {
+            return Err(Error::Invalid("chest count"));
+        }
+        out[count_offset..count_offset + 2].copy_from_slice(&(count as i16).to_le_bytes());
         if written != slots.len() {
             return Err(Error::Invalid("save chest slot"));
         }
@@ -218,4 +260,40 @@ impl World {
         self.save(backup)?;
         edited.save(path)
     }
+}
+
+fn write_container(
+    out: &mut BytesMut,
+    pos: (i32, i32),
+    chest: &Chest,
+    world: &World,
+) -> Result<(), Error> {
+    if pos != chest.position
+        || !(0..world.meta.width as i32).contains(&pos.0)
+        || !(0..world.meta.height as i32).contains(&pos.1)
+        || chest.capacity > 256
+    {
+        return Err(Error::Invalid("edited chest bounds"));
+    }
+    out.put_i32_le(pos.0);
+    out.put_i32_le(pos.1);
+    terraria_binary::put_string(out, &chest.name);
+    out.put_i32_le(chest.capacity as i32);
+    let mut items = chest.items.iter().peekable();
+    for slot in 0..chest.capacity {
+        if let Some(item) = items.next_if(|item| item.slot == slot) {
+            if item.stack <= 0 || item.item_type <= 0 {
+                return Err(Error::Invalid("edited chest item"));
+            }
+            out.put_i16_le(item.stack);
+            out.put_i32_le(item.item_type);
+            out.put_u8(item.prefix);
+        } else {
+            out.put_i16_le(0);
+        }
+    }
+    if items.next().is_some() {
+        return Err(Error::Invalid("edited chest slot order"));
+    }
+    Ok(())
 }

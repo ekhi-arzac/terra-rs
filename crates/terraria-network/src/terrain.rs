@@ -24,14 +24,13 @@ pub(super) struct LoadedWorld {
     source: World,
     workers: Arc<Semaphore>,
     edits: RwLock<WorldEdits>,
-    chests_by_section: BTreeMap<[u16; 2], Vec<i16>>,
 }
 
 pub(super) struct SectionSnapshot {
     index: [u16; 2],
     tiles: Vec<([i16; 2], Tile)>,
     chests: Bytes,
-    names: BTreeMap<i16, String>,
+    chest_objects: Vec<terraria_protocol::section::SectionObject>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct TileBounds {
@@ -63,18 +62,7 @@ struct TileEdit {
 struct WorldEdits {
     tiles: BTreeMap<[u16; 2], BTreeMap<[i16; 2], TileEdit>>,
     revision: u64,
-    slots: BTreeMap<(i16, u8), (u64, ChestStack)>,
-    names: BTreeMap<i16, (u64, String)>,
-}
-
-fn chest_item(chest: i16, slot: u8, value: ChestStack) -> Packet {
-    Packet::ChestItem {
-        chest,
-        slot,
-        stack: value.stack,
-        prefix: value.prefix,
-        item: value.item,
-    }
+    containers: crate::containers::Containers,
 }
 
 /// Owned by the single disk writer. Readers continue using the original world and live edits.
@@ -102,25 +90,14 @@ impl LoadedWorld {
             .filter(|(_, edit)| edit.revision > checkpoint.revision)
             .map(|(&pos, edit)| (pos, edit.tile))
             .collect();
-        let slots = edits
-            .slots
-            .iter()
-            .filter(|(_, (rev, _))| *rev > checkpoint.revision)
-            .map(|(&key, &(_, v))| (key, v))
-            .collect();
-        let names = edits
-            .names
-            .iter()
-            .filter(|(_, (rev, _))| *rev > checkpoint.revision)
-            .map(|(&index, (_, name))| (index, name.clone()))
-            .collect();
+        let containers = edits.containers.changes(checkpoint.revision);
         drop(edits);
         let base = checkpoint.published.as_ref().unwrap_or(&self.source);
-        let updated = base.with_chest_names(&blocks, &slots, &names)?;
+        let updated = base.with_containers(&blocks, &containers)?;
         base.publish_edits(&updated, path)?;
         checkpoint.published = Some(updated);
         checkpoint.revision = revision;
-        tracing::info!(world=%path.display(), tiles=blocks.len(),chest_slots=slots.len(),"saved world changes");
+        tracing::info!(world=%path.display(), tiles=blocks.len(),chests=containers.len(),"saved world changes");
         Ok(true)
     }
 
@@ -151,24 +128,15 @@ impl LoadedWorld {
                 .map_or(1, usize::from)
                 .min(4),
         ));
-        let mut chests_by_section = BTreeMap::<_, Vec<i16>>::new();
-        for (index, chest) in source.chests().iter().enumerate() {
-            let (x, y) = chest.position;
-            if (0..i32::from(data.size[0])).contains(&x)
-                && (0..i32::from(data.size[1])).contains(&y)
-            {
-                chests_by_section
-                    .entry(Self::section_at([x as i16, y as i16]))
-                    .or_default()
-                    .push(index as i16);
-            }
-        }
+        let containers = crate::containers::Containers::load(&source);
         Ok(Self {
             data,
-            chests_by_section,
             residents,
             join_state: join_state.freeze(),
-            edits: RwLock::default(),
+            edits: RwLock::new(WorldEdits {
+                containers,
+                ..Default::default()
+            }),
             source,
             workers,
         })
@@ -204,6 +172,30 @@ impl LoadedWorld {
     }
     pub fn commit_tiles(&self, changes: &[([i16; 2], Tile)], bounds: Option<TileBounds>) {
         let mut edits = self.edits.write().unwrap();
+        Self::record_tiles(&mut edits, changes, bounds);
+    }
+    pub fn commit_chest(
+        &self,
+        origin: [i16; 2],
+        place: bool,
+        changes: &[([i16; 2], Tile)],
+        bounds: TileBounds,
+    ) -> Option<i16> {
+        let mut edits = self.edits.write().unwrap();
+        let rev = edits.revision + 1;
+        let id = if place {
+            edits.containers.create(origin, rev)
+        } else {
+            edits.containers.remove_empty(origin, rev)
+        }?;
+        Self::record_tiles(&mut edits, changes, Some(bounds));
+        Some(id)
+    }
+    fn record_tiles(
+        edits: &mut WorldEdits,
+        changes: &[([i16; 2], Tile)],
+        bounds: Option<TileBounds>,
+    ) {
         edits.revision += 1;
         let revision = edits.revision;
         for &(pos, tile) in changes {
@@ -319,43 +311,25 @@ impl LoadedWorld {
     }
 
     pub fn chest_section(&self, chest: i16) -> Option<[u16; 2]> {
-        let (x, y) = self.source.chests().get(chest as usize)?.position;
-        Some(Self::section_at([x as i16, y as i16]))
+        self.edits
+            .read()
+            .unwrap()
+            .containers
+            .position(chest)
+            .map(Self::section_at)
     }
-
-    pub fn chest_at(&self, position: [i16; 2]) -> Option<i16> {
-        self.source
-            .chests()
-            .iter()
-            .position(|c| c.position == (position[0].into(), position[1].into()))
-            .map(|i| i as i16)
+    pub fn chest_at(&self, pos: [i16; 2]) -> Option<i16> {
+        self.edits.read().unwrap().containers.at(pos)
     }
-    fn name_packet(&self, index: i16, name: &str) -> Option<Packet> {
-        let (x, y) = self.source.chests().get(index as usize)?.position;
-        Some(Packet::ChestName {
-            chest: index,
-            position: [x as i16, y as i16],
-            name: name.to_owned(),
-        })
+    pub fn chest_name(&self, id: i16) -> Option<Packet> {
+        self.edits.read().unwrap().containers.name(id)
     }
-    pub fn chest_name(&self, index: i16) -> Option<Packet> {
-        let chest = self.source.chests().get(index as usize)?;
-        let edits = self.edits.read().unwrap();
-        self.name_packet(
-            index,
-            edits
-                .names
-                .get(&index)
-                .map_or(chest.name.as_str(), |(_, n)| n),
-        )
-    }
-    pub fn rename_chest(&self, index: i16, name: String) -> Option<Packet> {
-        let update = self.name_packet(index, &name)?;
+    pub fn rename_chest(&self, id: i16, name: String) -> Option<Packet> {
         let mut edits = self.edits.write().unwrap();
-        edits.revision += 1;
-        let rev = edits.revision;
-        edits.names.insert(index, (rev, name));
-        Some(update)
+        let rev = edits.revision + 1;
+        let packet = edits.containers.rename(id, name, rev)?;
+        edits.revision = rev;
+        Some(packet)
     }
     pub fn revision(&self) -> u64 {
         self.edits.read().unwrap().revision
@@ -370,6 +344,7 @@ impl LoadedWorld {
         if since == edits.revision {
             return Ok(());
         }
+        edits.containers.removed_since(since, sent, out)?;
         let mut footprints = BTreeSet::new();
         for index in sent {
             if let Some(changes) = edits.tiles.get(index) {
@@ -387,85 +362,25 @@ impl LoadedWorld {
         for bounds in footprints {
             out.extend_from_slice(&self.encode_rectangle(bounds, &edits, &BTreeMap::new())?);
         }
-        for (&index, (rev, name)) in &edits.names {
-            if *rev > since
-                && self
-                    .chest_section(index)
-                    .is_some_and(|section| sent.contains(&section))
-                && let Some(packet) = self.name_packet(index, name)
-            {
-                out.extend_from_slice(&packet.encode()?);
-            }
-        }
-        for (&(index, slot), (rev, value)) in &edits.slots {
-            let (x, y) = self.source.chests()[index as usize].position;
-            if *rev > since && sent.contains(&[x as u16 / SECTION_WIDTH, y as u16 / SECTION_HEIGHT])
-            {
-                out.extend_from_slice(&chest_item(index, slot, *value).encode()?);
-            }
-        }
-        Ok(())
+        edits.containers.catch_up(since, sent, out)
     }
-    pub fn edit_chest(&self, index: i16, slot: u8, value: ChestStack) -> bool {
-        if !self
-            .source
-            .chests()
-            .get(index as usize)
-            .is_some_and(|c| u32::from(slot) < c.capacity)
-        {
+    pub fn edit_chest(&self, id: i16, slot: u8, value: ChestStack) -> bool {
+        let mut edits = self.edits.write().unwrap();
+        let rev = edits.revision + 1;
+        if !edits.containers.edit_slot(id, slot, value, rev) {
             return false;
         }
-        let mut edits = self.edits.write().unwrap();
-        edits.revision += 1;
-        let rev = edits.revision;
-        edits.slots.insert((index, slot), (rev, value));
+        edits.revision = rev;
         true
     }
-    pub fn chest_contents(&self, index: i16) -> Result<BytesMut, ProtocolError> {
-        let edits = self.edits.read().unwrap();
+    pub fn chest_contents(&self, id: i16) -> Result<BytesMut, ProtocolError> {
         let mut batch = BytesMut::new();
-        self.write_chest(index, &edits, &mut batch)?;
+        self.edits
+            .read()
+            .unwrap()
+            .containers
+            .write_contents(id, &mut batch)?;
         Ok(batch)
-    }
-
-    fn write_chest(
-        &self,
-        index: i16,
-        edits: &WorldEdits,
-        batch: &mut BytesMut,
-    ) -> Result<(), ProtocolError> {
-        let chest = &self.source.chests()[index as usize];
-        if chest.capacity > 256 {
-            return Err(ProtocolError::Invalid("chest capacity"));
-        }
-        batch.extend_from_slice(
-            &Packet::ChestSize {
-                index,
-                capacity: chest.capacity as i16,
-            }
-            .encode()?,
-        );
-        let mut items = chest.items.iter().peekable();
-        for slot in 0..chest.capacity {
-            let item = items.next_if(|v| v.slot == slot);
-            if let Some((_, value)) = edits.slots.get(&(index, slot as u8)) {
-                batch.extend_from_slice(&chest_item(index, slot as u8, *value).encode()?);
-            } else {
-                batch.extend_from_slice(
-                    &Packet::ChestItem {
-                        chest: index,
-                        slot: slot as u8,
-                        item: item
-                            .map_or(Ok(0), |v| i16::try_from(v.item_type))
-                            .map_err(|_| ProtocolError::Invalid("chest item type"))?,
-                        stack: item.map_or(0, |v| v.stack),
-                        prefix: item.map_or(0, |v| v.prefix),
-                    }
-                    .encode()?,
-                );
-            }
-        }
-        Ok(())
     }
     pub fn contains(&self, index: [u16; 2]) -> bool {
         u32::from(index[0]) * u32::from(SECTION_WIDTH) < self.source.metadata().width
@@ -481,18 +396,12 @@ impl LoadedWorld {
             .map(|(&pos, edit)| (pos, edit.tile))
             .collect();
         let mut chests = BytesMut::new();
-        let mut names = BTreeMap::new();
-        for &chest in self.chests_by_section.get(&index).into_iter().flatten() {
-            self.write_chest(chest, &edits, &mut chests)?;
-            if let Some((_, name)) = edits.names.get(&chest) {
-                names.insert(chest, name.clone());
-            }
-        }
+        let chest_objects = edits.containers.section_snapshot(index, &mut chests)?;
         Ok(SectionSnapshot {
             index,
             tiles,
             chests: chests.freeze(),
-            names,
+            chest_objects,
         })
     }
 
@@ -510,16 +419,12 @@ impl LoadedWorld {
             index,
             tiles,
             chests,
-            names,
+            chest_objects,
         } = snapshot;
         let frame = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let mut section = source.source.section_with_edits(index, &tiles)?;
-            for chest in &mut section.chests {
-                if let Some(name) = names.get(&chest.index) {
-                    chest.text.clone_from(name);
-                }
-            }
+            section.chests = chest_objects;
             Ok::<_, Error>(Packet::TileSection(Box::new(section)).encode()?)
         })
         .await??;
