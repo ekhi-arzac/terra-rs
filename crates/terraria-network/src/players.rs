@@ -629,6 +629,18 @@ impl Roster {
                     return Ok(());
                 }
                 match packet {
+                    Packet::PlayerHurt(mut hurt) => {
+                        let hostile = peer.hostile;
+                        if let Some(target) = self.peers.get(&hurt.player)
+                            && (hurt.player == slot || (hostile && target.hostile))
+                        {
+                            if hurt.player != slot {
+                                hurt.reason.player = Some(i16::from(slot));
+                                hurt.pvp = true;
+                            }
+                            self.send(Some(slot), Packet::PlayerHurt(hurt).encode()?);
+                        }
+                    }
                     Packet::PlayerDeath(death) => self.player_death(death)?,
                     Packet::Spawn(spawn) => self.respawn(spawn)?,
                     Packet::PlayerTeam { team, .. } => self.change_team(slot, team)?,
@@ -1170,6 +1182,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 69
             | 79
             | 82
+            | 117
             | 118
             | 147
             | 151
@@ -1212,6 +1225,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             }
         }
         Packet::Spawn(s) if s.team <= 5 => s.player = slot,
+        Packet::PlayerHurt(_) => {}
         Packet::PlayerDeath(d) => d.player = slot,
         Packet::Ping => {}
         Packet::Movement(m) => m.player = slot,

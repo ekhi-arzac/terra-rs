@@ -57,6 +57,23 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
         ),
         (Packet::Appearance(a), 4, appearance),
         (
+            Packet::PlayerHurt(terraria_protocol::PlayerHurt {
+                player: 0,
+                reason: terraria_protocol::DeathReason {
+                    other: Some(0),
+                    ..Default::default()
+                },
+                damage: 20,
+                direction: 0,
+                critical: false,
+                pvp: false,
+                dodgeable: false,
+                immunity_slot: -1,
+            }),
+            117,
+            vec![0, 8, 0, 20, 0, 1, 0, 255],
+        ),
+        (
             Packet::PlayerDeath(terraria_protocol::PlayerDeath {
                 player: 0,
                 reason: terraria_protocol::DeathReason {
@@ -186,6 +203,9 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
 
 #[test]
 fn layouts_round_trip_and_reject_truncation_and_trailing_bytes() {
+    assert!(Packet::decode_client(&frame(117, &[0, 0, 20, 0, 1, 0, 6])).is_err());
+    assert!(Packet::decode_client(&frame(117, &[0, 0, 20, 0, 3, 0, 255])).is_err());
+    assert!(Packet::decode_client(&frame(117, &[255, 0, 20, 0, 1, 0, 255])).is_err());
     assert_eq!(
         Packet::decode_client(&frame(51, &[2, 1])),
         Err(Error::Unknown(51))

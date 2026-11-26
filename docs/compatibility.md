@@ -170,3 +170,7 @@ The three-player `terraria-testkit teams ADDR` scenario passed against the insta
 ## Player death and respawn
 
 The same three-player `terraria-testkit respawn ADDR` scenario passed on Rust and the installed official server. A player reported a poison death. Both active sockets received the localized death announcement, and the observer received the death and respawn packets. A third player saw zero health and the dead-player marker before respawn. After respawn a fresh join saw 150 of 300 life. The test used normal difficulty and the world spawn. Environmental death messages currently select a fixed stock phrasing. Entity or item-specific kill text, equipment effects, special spawn validation, and death-generated loot remain incomplete.
+
+## Player hurt reports
+
+The three-player `terraria-testkit hurt ADDR` probe passed against the installed official 1.4.6.1 server and Rust. It verifies delivery of an environmental hit, suppression of a hit before PvP opt-in, delivery to the target and another observer after both players opt in, and health synchronization to a late joiner after the target uploads its vitals. Rust binds attribution for cross-player reports to the sending connection. Rust uses the victim’s subsequent health upload for its roster. An official-server probe also observed a changed health value before that upload, which remains a difference.

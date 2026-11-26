@@ -1,6 +1,7 @@
 //! Direct TCP probes. Keep reference and candidate isolated and idle for slot comparisons.
 mod clock;
 mod entry;
+mod hurt;
 mod peers;
 mod resources;
 mod respawn;
@@ -345,6 +346,9 @@ async fn main() -> Result<()> {
             "teams" => {
                 return timeout(deadline, teams::run(addr.parse()?, password.as_deref())).await?;
             }
+            "hurt" => {
+                return timeout(deadline, hurt::run(addr.parse()?, password.as_deref())).await?;
+            }
             "respawn" => {
                 return timeout(deadline, respawn::run(addr.parse()?, password.as_deref())).await?;
             }
@@ -386,7 +390,7 @@ async fn main() -> Result<()> {
         [cmd,addr,case] if cmd == "probe" => (addr,None,Scenario::parse(case)?,None),
         [cmd,a,b,case] if cmd == "compare" => (a,Some(b),Scenario::parse(case)?,None),
         [cmd,addr,path] if cmd == "capture-world" => (addr,None,Scenario::Join,Some(Path::new(path))),
-        _ => return Err("usage: terraria-testkit clock ADDR | teams ADDR | respawn ADDR | resources ADDR CHEST_X CHEST_Y | peers ADDR [ADDR] | probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
+        _ => return Err("usage: terraria-testkit clock ADDR | teams ADDR | respawn ADDR | hurt ADDR | resources ADDR CHEST_X CHEST_Y | peers ADDR [ADDR] | probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
     };
     let password = env::var("TERRARIA_PROBE_PASSWORD").ok();
     let run = |address: SocketAddr| {

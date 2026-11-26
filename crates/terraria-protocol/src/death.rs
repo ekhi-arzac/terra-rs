@@ -1,4 +1,4 @@
-//! The stock player-death report carries optional attribution before its fixed fields.
+//! Player hurt and death reports share optional attribution and an impact direction.
 use crate::wire::{Error, Reader, put_string};
 use bytes::{BufMut, BytesMut};
 
@@ -97,32 +97,95 @@ pub struct PlayerDeath {
     pub pvp: bool,
 }
 
+fn read_direction(r: &mut Reader<'_>) -> Result<i8, Error> {
+    match r.byte()? {
+        value @ 0..=2 => Ok(value as i8 - 1),
+        _ => Err(Error::Invalid("impact direction")),
+    }
+}
+
+fn write_direction(direction: i8, w: &mut BytesMut) -> Result<(), Error> {
+    if !(-1..=1).contains(&direction) {
+        return Err(Error::Invalid("impact direction"));
+    }
+    w.put_u8((direction + 1) as u8);
+    Ok(())
+}
+
 impl PlayerDeath {
     pub(crate) fn read(r: &mut Reader<'_>) -> Result<Self, Error> {
         let player = r.byte()?;
         let reason = DeathReason::read(r)?;
         let damage = r.i16()?;
-        let direction = r.byte()?;
-        if direction > 2 {
-            return Err(Error::Invalid("player death direction"));
-        }
+        let direction = read_direction(r)?;
         Ok(Self {
             player,
             reason,
             damage,
-            direction: direction as i8 - 1,
+            direction,
             pvp: r.byte()? & 1 != 0,
         })
     }
     pub(crate) fn write(&self, w: &mut BytesMut) -> Result<(), Error> {
-        if !(-1..=1).contains(&self.direction) {
-            return Err(Error::Invalid("player death direction"));
-        }
         w.put_u8(self.player);
         self.reason.write(w)?;
         w.put_i16_le(self.damage);
-        w.put_u8((self.direction + 1) as u8);
+        write_direction(self.direction, w)?;
         w.put_u8(u8::from(self.pvp));
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayerHurt {
+    pub player: u8,
+    pub reason: DeathReason,
+    pub damage: i16,
+    pub direction: i8,
+    pub critical: bool,
+    pub pvp: bool,
+    pub dodgeable: bool,
+    pub immunity_slot: i8,
+}
+
+impl PlayerHurt {
+    fn validate(&self) -> Result<(), Error> {
+        if self.player == 255 || self.damage <= 0 || !(-1..=5).contains(&self.immunity_slot) {
+            return Err(Error::Invalid("player hurt fields"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn read(r: &mut Reader<'_>) -> Result<Self, Error> {
+        let player = r.byte()?;
+        let reason = DeathReason::read(r)?;
+        let damage = r.i16()?;
+        let direction = read_direction(r)?;
+        let flags = r.byte()?;
+        let hurt = Self {
+            player,
+            reason,
+            damage,
+            direction,
+            critical: flags & 1 != 0,
+            pvp: flags & 2 != 0,
+            dodgeable: flags & 4 != 0,
+            immunity_slot: r.byte()? as i8,
+        };
+        hurt.validate()?;
+        Ok(hurt)
+    }
+
+    pub(crate) fn write(&self, w: &mut BytesMut) -> Result<(), Error> {
+        self.validate()?;
+        w.put_u8(self.player);
+        self.reason.write(w)?;
+        w.put_i16_le(self.damage);
+        write_direction(self.direction, w)?;
+        let flags =
+            u8::from(self.critical) | u8::from(self.pvp) << 1 | u8::from(self.dodgeable) << 2;
+        w.put_u8(flags);
+        w.put_i8(self.immunity_slot);
         Ok(())
     }
 }
