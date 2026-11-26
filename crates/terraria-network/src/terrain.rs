@@ -63,6 +63,7 @@ struct TileEdit {
 struct WorldEdits {
     clock: terraria_world::WorldClock,
     phase_revision: u64,
+    content_revision: u64,
     tiles: BTreeMap<[u16; 2], BTreeMap<[i16; 2], TileEdit>>,
     revision: u64,
     containers: crate::containers::Containers,
@@ -86,14 +87,18 @@ impl LoadedWorld {
         if revision == checkpoint.revision {
             return Ok(false);
         }
-        let blocks = edits
-            .tiles
-            .values()
-            .flat_map(|s| s.iter())
-            .filter(|(_, edit)| edit.revision > checkpoint.revision)
-            .map(|(&pos, edit)| (pos, edit.tile))
-            .collect();
-        let containers = edits.containers.changes(checkpoint.revision);
+        let (blocks, containers) = if edits.content_revision > checkpoint.revision {
+            let blocks = edits
+                .tiles
+                .values()
+                .flat_map(|s| s.iter())
+                .filter(|(_, edit)| edit.revision > checkpoint.revision)
+                .map(|(&pos, edit)| (pos, edit.tile))
+                .collect();
+            (blocks, edits.containers.changes(checkpoint.revision))
+        } else {
+            Default::default()
+        };
         let clock = edits.clock;
         drop(edits);
         let base = checkpoint.published.as_ref().unwrap_or(&self.source);
@@ -238,6 +243,7 @@ impl LoadedWorld {
     ) {
         edits.revision += 1;
         let revision = edits.revision;
+        edits.content_revision = revision;
         for &(pos, tile) in changes {
             let section = edits.tiles.entry(Self::section_at(pos)).or_default();
             // Wall changes can preserve a recently placed station's block and frame.
@@ -369,6 +375,7 @@ impl LoadedWorld {
         let rev = edits.revision + 1;
         let packet = edits.containers.rename(id, name, rev)?;
         edits.revision = rev;
+        edits.content_revision = rev;
         Some(packet)
     }
     pub fn revision(&self) -> u64 {
@@ -381,13 +388,13 @@ impl LoadedWorld {
         out: &mut BytesMut,
     ) -> Result<(), ProtocolError> {
         let edits = self.edits.read().unwrap();
-        if since == edits.revision {
-            return Ok(());
-        }
         if edits.phase_revision > since {
             let mut data = self.data.clone();
             edits.clock.apply(&mut data);
             out.extend_from_slice(&Packet::WorldData(Box::new(data)).encode()?);
+        }
+        if edits.content_revision <= since {
+            return Ok(());
         }
         edits.containers.removed_since(since, sent, out)?;
         let mut footprints = BTreeSet::new();
@@ -416,6 +423,7 @@ impl LoadedWorld {
             return false;
         }
         edits.revision = rev;
+        edits.content_revision = rev;
         true
     }
     pub fn chest_contents(&self, id: i16) -> Result<BytesMut, ProtocolError> {

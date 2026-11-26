@@ -67,7 +67,7 @@ cargo bench --bench packets
 TERRARIA_BENCH_WORLD=/path/to/world.wld cargo bench --bench world
 ```
 
-One release-profile run on the world above measured 72.9 ns per equipment encode/frame/decode, 12.8 ms to read and index the file, 1.15 µs per indexed tile lookup, and 1.75 ms for a verified copy under /tmp. These single-machine timings depend on filesystem, cache and hardware. Simulation benchmarks await an executable game tick.
+One release-profile run on the world above measured 72.9 ns per equipment encode/frame/decode, 12.8 ms to read and index the file, 1.15 µs per indexed tile lookup, and 1.75 ms for a verified copy under /tmp. These single-machine timings depend on filesystem, cache and hardware.
 
 ## Headless world entry and multiplayer
 
@@ -92,7 +92,7 @@ The two-player scenario ran on both implementations. Each observed slot activati
 
 The offline regression world `fixtures/entry-326.wld` retains the classic world's real extended header and auxiliary sections, with a small constructed terrain and chest. The supplied server loaded it and emitted `fixtures/entry-world-data-326.bin`. The section fixture `fixtures/tile-section-326.bin` was captured separately from the classic world at tile (1600, 150). It includes chest 26.
 
-On the current classic snapshot, release benchmarks measured 11.6 ms to load and index the world, 379 µs to read and compress a spawn section, and 1.91 ms to stage, verify and publish an exact copy.
+On the classic snapshot, release benchmarks measured 11.6 ms to load and index the world, 379 µs to read and compress a spawn section, and 1.91 ms to stage, verify and publish an exact copy. A later run measured 3.5 ns per isolated calendar step and 10.2 ms to build and validate a clock-only checkpoint in memory. The checkpoint measurement includes re-parsing the resulting world. The calendar measurement covers arithmetic alone.
 
 ## Resource transfer and gameplay saves
 

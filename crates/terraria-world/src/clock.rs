@@ -199,6 +199,10 @@ mod tests {
             let info = saved.world_data().unwrap();
             assert_eq!(info.time, 29);
             assert_eq!(WorldClock::from_world(saved.metadata().time, &info), clock);
+            assert_eq!(
+                &saved.data[saved.offsets[1]..],
+                &world.data[world.offsets[1]..],
+            );
         }
     }
 }

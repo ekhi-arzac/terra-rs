@@ -71,12 +71,17 @@ impl World {
         }) {
             return Err(Error::Invalid("chest rename"));
         }
-        let mut out = BytesMut::from(&self.data[..self.offsets[1]]);
+        let mut out = BytesMut::with_capacity(self.data.len());
+        out.extend_from_slice(&self.data[..self.offsets[1]]);
         if let Some(clock) = clock {
             if !clock.time.is_finite() {
                 return Err(Error::Invalid("non-finite world time"));
             }
             self.join_state()?.clock_offsets.write(&mut out, clock);
+        }
+        if blocks.is_empty() && slots.is_empty() && names.is_empty() && containers.is_empty() {
+            out.extend_from_slice(&self.data[self.offsets[1]..]);
+            return self.validate_revision(out);
         }
         let mut offsets = self.offsets;
         for (x, column) in self.columns.windows(2).enumerate() {
@@ -218,8 +223,12 @@ impl World {
                     .to_le_bytes(),
             );
         }
+        self.validate_revision(out)
+    }
+
+    fn validate_revision(&self, mut out: BytesMut) -> Result<World, Error> {
         out[12..16].copy_from_slice(&self.meta.revision.wrapping_add(1).to_le_bytes());
-        World::parse(out.to_vec())
+        World::parse(out.into())
     }
 
     fn matches_file(&self, file: &mut File) -> io::Result<bool> {

@@ -1,10 +1,10 @@
 use std::{env, error::Error, hint::black_box, time::Instant};
 use tempfile::tempdir;
-use terraria_world::World;
+use terraria_world::{World, WorldClock};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let Some(path) = env::var_os("TERRARIA_BENCH_WORLD") else {
-        println!("Set TERRARIA_BENCH_WORLD to a release-326 .wld to run the world benchmark.");
+        println!("Set TERRARIA_BENCH_WORLD to an absolute path to an existing Terraria world.");
         return Ok(());
     };
     let start = Instant::now();
@@ -39,6 +39,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "Stage, sync, verify and publish world: {:?}",
         start.elapsed()
+    );
+    let mut clock = WorldClock::from_world(meta.time, &world.world_data()?);
+    let rate = world.saved_time_rate()?;
+    let steps = 1_000_000;
+    let start = Instant::now();
+    for _ in 0..steps {
+        black_box(black_box(&mut clock).tick(black_box(rate)));
+    }
+    println!(
+        "Advance world clock: {:.1} ns/step",
+        start.elapsed().as_nanos() as f64 / f64::from(steps),
+    );
+    let start = Instant::now();
+    for _ in 0..10 {
+        black_box(world.checkpoint(&Default::default(), &Default::default(), clock)?);
+    }
+    println!(
+        "Build and validate clock-only checkpoint: {:?}/checkpoint",
+        start.elapsed() / 10,
     );
     Ok(())
 }

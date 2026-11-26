@@ -59,3 +59,5 @@ Team membership and PvP status belong to the active connection. The roster initi
 A death report updates the roster's life and PvP death state and releases the player's open chest. A later spawn replaces the prior position, team and spawn record. Health uploads, item reservation selection, door obstruction checks and joining snapshots read the same player state.
 
 The roster tracks the last reported projectile key and position per client and local slot for the supported projectile messages. It verifies the key against the connection and clears the remaining entries on departure. A delayed removal with an older generation leaves the tracked newer instance intact.
+
+A world-clock tick updates the save revision. Tile and container mutations also record a content revision, allowing saves and joins to skip the terrain and container journals when only time has advanced. A clock-only checkpoint copies the original sections and validates the new world image before publishing.
