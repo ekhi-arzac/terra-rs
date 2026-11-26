@@ -9,7 +9,7 @@ use std::{
 };
 use terraria_protocol::Error as ProtocolError;
 use terraria_protocol::{
-    NetworkText, Packet, WorldData,
+    LiquidUpdate, NetworkText, Packet, WorldData,
     section::{SECTION_HEIGHT, SECTION_WIDTH},
 };
 use terraria_protocol::{TilePatch, section::section_tile};
@@ -228,6 +228,22 @@ impl LoadedWorld {
     pub fn commit_tiles(&self, changes: &[([i16; 2], Tile)], bounds: Option<TileBounds>) {
         let mut edits = self.edits.write().unwrap();
         Self::record_tiles(&mut edits, changes, bounds);
+    }
+    pub fn update_liquid(&self, update: LiquidUpdate) -> Option<Packet> {
+        let mut edits = self.edits.write().unwrap();
+        let mut tile = self.tile_at(update.position, &edits)?;
+        let liquid = (update.amount != 0).then_some((update.kind, update.amount));
+        if tile.liquid != liquid {
+            tile.liquid = liquid;
+            Self::record_tiles(&mut edits, &[(update.position, tile)], None);
+        } else if liquid.is_some() {
+            return None;
+        }
+        Some(if update.amount == 0 {
+            Packet::LiquidUpdate(update)
+        } else {
+            Packet::LiquidBatch(vec![update])
+        })
     }
     pub fn commit_chest(
         &self,

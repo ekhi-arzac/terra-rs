@@ -139,6 +139,8 @@ pub enum Packet {
     },
     RequestChest([i16; 2]),
     RequestSign([i16; 2]),
+    LiquidUpdate(crate::LiquidUpdate),
+    LiquidBatch(Vec<crate::LiquidUpdate>),
     SignText {
         index: i16,
         position: [i16; 2],
@@ -257,6 +259,8 @@ impl Packet {
             Self::NpcHome { .. } => 60,
             Self::RequestChest(_) => 31,
             Self::RequestSign(_) => 46,
+            Self::LiquidUpdate(_) => 48,
+            Self::LiquidBatch(_) => 82,
             Self::SignText { .. } => 47,
             Self::ChestUpdate { .. } => 34,
             Self::RequestChestName { .. } | Self::ChestName { .. } => 69,
@@ -398,6 +402,7 @@ impl Packet {
             151 => Self::RemoveItem(r.i16()?),
             31 => Self::RequestChest(r.i16s()?),
             46 => Self::RequestSign(r.i16s()?),
+            48 => Self::LiquidUpdate(crate::LiquidUpdate::read(&mut r)?),
             47 => Self::SignText {
                 index: r.i16()?,
                 position: r.i16s()?,
@@ -535,6 +540,7 @@ impl Packet {
                 active: r.byte()? != 0,
             },
             82 => match (r.u16()?, from_client) {
+                (0, false) => Self::LiquidBatch(crate::liquid::read_batch(&mut r)?),
                 (1, true) => Self::ChatCommand {
                     command: r.string()?.to_owned(),
                     text: r.string()?.to_owned(),
@@ -826,6 +832,8 @@ impl Packet {
                 }
                 out.put_u8(*team);
             }
+            Self::LiquidUpdate(update) => update.write(&mut out),
+            Self::LiquidBatch(changes) => crate::liquid::write_batch(&mut out, changes)?,
             Self::BannerState(s) => {
                 out.put_u16_le(11);
                 s.write(&mut out);

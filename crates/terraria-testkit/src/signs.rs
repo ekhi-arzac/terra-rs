@@ -52,12 +52,7 @@ fn world_with_signs() -> Result<World> {
 }
 
 pub(super) fn prepare(directory: &Path) -> Result<()> {
-    let world = world_with_signs()?;
-    std::fs::create_dir(directory)?;
-    let path = directory.join("signs.wld");
-    world.save(&path)?;
-    println!("{}", path.display());
-    Ok(())
+    super::save_fixture(world_with_signs()?, directory, "signs.wld")
 }
 
 fn sign_text(index: i16, position: [i16; 2], text: &str, player: u8, flags: u8) -> Packet {

@@ -58,6 +58,31 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
         (Packet::Appearance(a), 4, appearance),
         (Packet::RequestSign([2199, 232]), 46, vec![151, 8, 232, 0]),
         (
+            Packet::LiquidUpdate(terraria_protocol::LiquidUpdate {
+                position: [2198, 232],
+                amount: 0,
+                kind: terraria_binary::tiles::Liquid::Water,
+            }),
+            48,
+            vec![150, 8, 232, 0, 0, 0],
+        ),
+        (
+            Packet::LiquidBatch(vec![
+                terraria_protocol::LiquidUpdate {
+                    position: [2198, 232],
+                    amount: 200,
+                    kind: terraria_binary::tiles::Liquid::Water,
+                },
+                terraria_protocol::LiquidUpdate {
+                    position: [2215, 232],
+                    amount: 200,
+                    kind: terraria_binary::tiles::Liquid::Shimmer,
+                },
+            ]),
+            82,
+            vec![0, 0, 2, 0, 232, 0, 150, 8, 200, 0, 232, 0, 167, 8, 200, 3],
+        ),
+        (
             Packet::SignText {
                 index: 2,
                 position: [2199, 232],
@@ -249,6 +274,9 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
 
 #[test]
 fn layouts_round_trip_and_reject_truncation_and_trailing_bytes() {
+    assert!(Packet::decode_client(&frame(48, &[1, 0, 1, 0, 255, 4])).is_err());
+    assert!(Packet::decode_client(&frame(82, &[0, 0, 0, 0])).is_err());
+    assert!(Packet::decode(&frame(82, &[0, 0, 255, 255])).is_err());
     assert!(Packet::decode_client(&frame(117, &[0, 0, 20, 0, 1, 0, 6])).is_err());
     assert!(Packet::decode_client(&frame(117, &[0, 0, 20, 0, 3, 0, 255])).is_err());
     assert!(Packet::decode_client(&frame(117, &[255, 0, 20, 0, 1, 0, 255])).is_err());

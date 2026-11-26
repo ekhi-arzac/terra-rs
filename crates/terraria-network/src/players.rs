@@ -636,12 +636,25 @@ impl Roster {
                 | Packet::RequestChestName { position, .. }
                 | Packet::RequestSign(position)
                 | Packet::SignText { position, .. }
+                | Packet::LiquidUpdate(terraria_protocol::LiquidUpdate { position, .. })
                 | Packet::RequestChest(position) = &packet
                     && !peer.sections.contains(&LoadedWorld::section_at(*position))
                 {
                     return Ok(());
                 }
                 match packet {
+                    Packet::LiquidUpdate(change) => {
+                        if let Some(reply) =
+                            self.world.as_ref().and_then(|w| w.update_liquid(change))
+                        {
+                            let excluded = (change.amount == 0).then_some(slot);
+                            self.send_section_update(
+                                LoadedWorld::section_at(change.position),
+                                excluded,
+                                reply.encode()?,
+                            );
+                        }
+                    }
                     Packet::RequestSign(position) => {
                         if let Some(reply) = self
                             .world
@@ -1251,6 +1264,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 45
             | 46
             | 47
+            | 48
             | 50
             | 51
             | 56
@@ -1290,6 +1304,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
         | Packet::RequestChest(_)
         | Packet::RequestSign(_)
         | Packet::SignText { .. }
+        | Packet::LiquidUpdate(_)
         | Packet::ChestState { .. } => {}
         Packet::ChestItem {
             stack,

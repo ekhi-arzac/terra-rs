@@ -184,3 +184,7 @@ The two-player `terraria-testkit projectiles ADDR` probe passed against the inst
 The `terraria-testkit signs ADDR` probe passed on the installed 1.4.6.1 server and Rust. It reads a sign spanning a section boundary from its bottom-right tile, changes its text, opens a second sign whose text record is missing, and checks both texts on a late join. The probe uses multiline Unicode. The official server also opened a copy of the Rust checkpoint and returned both saved texts from their original tile anchors.
 
 Create separate disposable fixtures with `terraria-testkit sign-fixture NEW_DIR`, then start each server on its own `signs.wld`. Rust limits each new text edit to 4,096 UTF-8 bytes. Sign placement and destruction remain incomplete.
+
+## Liquid cell synchronization
+
+The `terraria-testkit liquids ADDR` probe passed on the installed 1.4.6.1 server and Rust. It fills four sealed cells with 200 units each of water, lava, honey and shimmer, drains the water, and verifies the resulting terrain on a late join. The loopback regression saves the same changes and reloads the world to verify all four cells. Create separate disposable fixtures with `terraria-testkit liquid-fixture NEW_DIR` and start each server on its own `liquids.wld`. This comparison covers client-reported amounts in sealed cells. Flow, mixing and world-generated liquid updates remain incomplete.

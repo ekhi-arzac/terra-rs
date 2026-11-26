@@ -1,6 +1,7 @@
 //! Mutating probe for a disposable copy of a world with a known chest.
 use super::{
     Result,
+    entry::visible_tile,
     peers::{join, observe},
 };
 use std::net::SocketAddr;
@@ -19,36 +20,6 @@ async fn next(stream: &mut TcpStream, id: u8) -> Result<Packet> {
         }
     }
 }
-fn visible_tile(log: &[Packet], [x, y]: [i16; 2]) -> Option<terraria_world::Tile> {
-    log.iter().rev().find_map(|p| {
-        if let Packet::TilePatch(patch) = p {
-            let dx = i32::from(x) - i32::from(patch.origin[0]);
-            let dy = i32::from(y) - i32::from(patch.origin[1]);
-            if (0..i32::from(patch.size[0])).contains(&dx)
-                && (0..i32::from(patch.size[1])).contains(&dy)
-            {
-                return Some(patch.tiles[dx as usize * usize::from(patch.size[1]) + dy as usize]);
-            }
-        }
-        let Packet::TileSection(s) = p else {
-            return None;
-        };
-        let dx = i32::from(x) - s.origin[0];
-        let dy = i32::from(y) - s.origin[1];
-        if !(0..i32::from(s.size[0])).contains(&dx) || !(0..i32::from(s.size[1])).contains(&dy) {
-            return None;
-        }
-        let mut remaining = dy as u32 * u32::from(s.size[0]) + dx as u32;
-        for run in &s.runs {
-            if remaining < u32::from(run.count) {
-                return Some(run.tile);
-            }
-            remaining -= u32::from(run.count);
-        }
-        None
-    })
-}
-
 fn matches_edit(frame: &terraria_protocol::Frame, request: &Packet) -> Result<bool> {
     let Packet::TileChange {
         position,

@@ -136,3 +136,9 @@ Packet 27 appends two f32 position components, two f32 velocity components, an i
 ## Sign text
 
 Packet 46 requests a sign with two i16 tile coordinates. A click on any tile in the sign footprint resolves to the top-left tile using its stored frame. Packet 47 carries the i16 sign slot, two i16 top-left coordinates, a .NET UTF-8 string, a player byte and a flag byte. With the requesting player in the packet and flag bit 0 clear the client opens the sign. Rust verifies the slot and coordinates against the current sign before accepting a text edit and uses the editing connection as the player. Subscribed peers receive text changes. Join catch-up and corrections set bit 0 to retain the current UI state.
+
+## Liquid cell updates
+
+Packet 48 carries two i16 tile coordinates, an amount byte, and a liquid type byte (0 water, 1 lava, 2 honey, 3 shimmer). The server accepts edits to streamed tiles. An amount of zero clears a cell and relays packet 48 to peers in the section. A changed nonzero amount emits the server-to-client liquid module. A joining client receives the committed cells through packet 10 or a catch-up patch.
+
+Net module 0 in packet 82 begins with a u16 entry count. Each entry has a packed little-endian u32 coordinate with x in the upper half and y in the lower half, then the amount and type bytes. Rust bounds the entry count by the frame and accepts the module from the server direction.

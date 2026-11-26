@@ -2,6 +2,7 @@
 mod clock;
 mod entry;
 mod hurt;
+mod liquids;
 mod peers;
 mod projectiles;
 mod resources;
@@ -338,6 +339,14 @@ fn compare(reference: &[Packet], candidate: &[Packet]) -> Result<()> {
     .into())
 }
 
+fn save_fixture(world: terraria_world::World, directory: &Path, name: &str) -> Result<()> {
+    fs::create_dir(directory)?;
+    let path = directory.join(name);
+    world.save(&path)?;
+    println!("{}", path.display());
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<_> = env::args().skip(1).collect();
@@ -345,6 +354,10 @@ async fn main() -> Result<()> {
         let password = env::var("TERRARIA_PROBE_PASSWORD").ok();
         let deadline = Duration::from_secs(30);
         match cmd.as_str() {
+            "liquid-fixture" => return liquids::prepare(Path::new(addr)),
+            "liquids" => {
+                return timeout(deadline, liquids::run(addr.parse()?, password.as_deref())).await?;
+            }
             "sign-fixture" => return signs::prepare(Path::new(addr)),
             "signs" => {
                 return timeout(deadline, signs::run(addr.parse()?, password.as_deref())).await?;
@@ -403,7 +416,7 @@ async fn main() -> Result<()> {
         [cmd,addr,case] if cmd == "probe" => (addr,None,Scenario::parse(case)?,None),
         [cmd,a,b,case] if cmd == "compare" => (a,Some(b),Scenario::parse(case)?,None),
         [cmd,addr,path] if cmd == "capture-world" => (addr,None,Scenario::Join,Some(Path::new(path))),
-        _ => return Err("usage: terraria-testkit sign-fixture NEW_DIR | signs ADDR | clock ADDR | teams ADDR | respawn ADDR | hurt ADDR | projectiles ADDR | resources ADDR CHEST_X CHEST_Y | peers ADDR [ADDR] | probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
+        _ => return Err("usage: terraria-testkit liquid-fixture NEW_DIR | liquids ADDR | sign-fixture NEW_DIR | signs ADDR | clock ADDR | teams ADDR | respawn ADDR | hurt ADDR | projectiles ADDR | resources ADDR CHEST_X CHEST_Y | peers ADDR [ADDR] | probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
     };
     let password = env::var("TERRARIA_PROBE_PASSWORD").ok();
     let run = |address: SocketAddr| {

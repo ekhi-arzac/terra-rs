@@ -1,9 +1,10 @@
 use crate::{
+    liquid::{read_kind, write_kind},
     section::{FRAME_IMPORTANT, TILE_TYPES},
     wire::{Error, Reader},
 };
 use bytes::{BufMut, BytesMut};
-use terraria_binary::tiles::{Liquid, Tile};
+use terraria_binary::tiles::Tile;
 
 /// Active terrain update (20). Cells are ordered by column, from top to bottom.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,8 +22,6 @@ fn framed(block: u16) -> Result<bool, Error> {
     }
     Ok(FRAME_IMPORTANT[i / 8] & (1 << (i % 8)) != 0)
 }
-
-const LIQUID_TYPES: [Liquid; 4] = [Liquid::Water, Liquid::Lava, Liquid::Honey, Liquid::Shimmer];
 
 impl TilePatch {
     pub(crate) fn read(r: &mut Reader<'_>) -> Result<Self, Error> {
@@ -46,10 +45,7 @@ impl TilePatch {
             let wall = if a & 4 != 0 { r.u16()? } else { 0 };
             let liquid = if a & 8 != 0 {
                 let amount = r.byte()?;
-                let kind = LIQUID_TYPES
-                    .get(usize::from(r.byte()?))
-                    .ok_or(Error::Invalid("tile patch liquid"))?;
-                Some((*kind, amount))
+                Some((read_kind(r)?, amount))
             } else {
                 None
             };
@@ -121,12 +117,7 @@ impl TilePatch {
             }
             if let Some((liquid, amount)) = t.liquid {
                 w.put_u8(amount);
-                w.put_u8(match liquid {
-                    Liquid::Water => 0,
-                    Liquid::Lava => 1,
-                    Liquid::Honey => 2,
-                    Liquid::Shimmer => 3,
-                });
+                write_kind(w, liquid);
             }
         }
         Ok(())
