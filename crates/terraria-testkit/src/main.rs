@@ -1,5 +1,6 @@
 //! Direct TCP probes. Keep reference and candidate isolated and idle for slot comparisons.
 mod clock;
+mod construction;
 mod entry;
 mod hurt;
 mod liquids;
@@ -354,6 +355,14 @@ async fn main() -> Result<()> {
         let password = env::var("TERRARIA_PROBE_PASSWORD").ok();
         let deadline = Duration::from_secs(30);
         match cmd.as_str() {
+            "construction-fixture" => return construction::prepare(Path::new(addr)),
+            "construction" => {
+                return timeout(
+                    deadline,
+                    construction::run(addr.parse()?, password.as_deref()),
+                )
+                .await?;
+            }
             "liquid-fixture" => return liquids::prepare(Path::new(addr)),
             "liquids" => {
                 return timeout(deadline, liquids::run(addr.parse()?, password.as_deref())).await?;
@@ -416,7 +425,7 @@ async fn main() -> Result<()> {
         [cmd,addr,case] if cmd == "probe" => (addr,None,Scenario::parse(case)?,None),
         [cmd,a,b,case] if cmd == "compare" => (a,Some(b),Scenario::parse(case)?,None),
         [cmd,addr,path] if cmd == "capture-world" => (addr,None,Scenario::Join,Some(Path::new(path))),
-        _ => return Err("usage: terraria-testkit liquid-fixture NEW_DIR | liquids ADDR | sign-fixture NEW_DIR | signs ADDR | clock ADDR | teams ADDR | respawn ADDR | hurt ADDR | projectiles ADDR | resources ADDR CHEST_X CHEST_Y | peers ADDR [ADDR] | probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
+        _ => return Err("usage: terraria-testkit construction-fixture NEW_DIR | construction ADDR | liquid-fixture NEW_DIR | liquids ADDR | sign-fixture NEW_DIR | signs ADDR | clock ADDR | teams ADDR | respawn ADDR | hurt ADDR | projectiles ADDR | resources ADDR CHEST_X CHEST_Y | peers ADDR [ADDR] | probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
     };
     let password = env::var("TERRARIA_PROBE_PASSWORD").ok();
     let run = |address: SocketAddr| {

@@ -188,3 +188,7 @@ Create separate disposable fixtures with `terraria-testkit sign-fixture NEW_DIR`
 ## Liquid cell synchronization
 
 The `terraria-testkit liquids ADDR` probe passed on the installed 1.4.6.1 server and Rust. It fills four sealed cells with 200 units each of water, lava, honey and shimmer, drains the water, and verifies the resulting terrain on a late join. The loopback regression saves the same changes and reloads the world to verify all four cells. Create separate disposable fixtures with `terraria-testkit liquid-fixture NEW_DIR` and start each server on its own `liquids.wld`. This comparison covers client-reported amounts in sealed cells. Flow, mixing and world-generated liquid updates remain incomplete.
+
+## Hammer shapes and wire edits
+
+The `terraria-testkit construction ADDR` probe passed on the installed 1.4.6.1 server and Rust. It checks half-block toggling, all four slopes, chest support, placement of four wire colors, and recovery of wire and an actuator. A repeated wire cut yields no second drop. The late join and Rust save/reload check the resulting flags, including wires routed through air. Create separate disposable fixtures with `terraria-testkit construction-fixture NEW_DIR` and run each server on its own `construction.wld`. Platform framing and the full support rules for other furniture remain incomplete.

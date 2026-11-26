@@ -142,3 +142,9 @@ Packet 46 requests a sign with two i16 tile coordinates. A click on any tile in 
 Packet 48 carries two i16 tile coordinates, an amount byte, and a liquid type byte (0 water, 1 lava, 2 honey, 3 shimmer). The server accepts edits to streamed tiles. An amount of zero clears a cell and relays packet 48 to peers in the section. A changed nonzero amount emits the server-to-client liquid module. A joining client receives the committed cells through packet 10 or a catch-up patch.
 
 Net module 0 in packet 82 begins with a u16 entry count. Each entry has a packed little-endian u32 coordinate with x in the upper half and y in the lower half, then the amount and type bytes. Rust bounds the entry count by the frame and accepts the module from the server direction.
+
+## Hammering and wire edits
+
+Packet 17 actions 7 and 23 toggle a half-block. The stock client uses action 23 with value zero to clear an existing slope as it toggles. Action 14 sets a slope in the range 0–4, where zero restores the full block. Rust supports these edits for common terrain and checks for protected tiles above the block. Hammer actions publish the resulting tile in packet 20.
+
+Actions 5/6, 10/11, 12/13 and 16/17 place and remove red, blue, green and yellow wire. Actions 8/9 place and remove an actuator. Each successful removal produces one wire (item 530) or actuator (item 849). The flags persist independently of foreground blocks.

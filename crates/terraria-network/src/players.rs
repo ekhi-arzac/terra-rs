@@ -1,4 +1,5 @@
 //! The roster owner serializes membership and player updates. Socket writes never run on it.
+mod construction;
 mod death;
 mod teams;
 use crate::doors::{self, Door};
@@ -789,6 +790,14 @@ impl Roster {
                         {
                             self.place_station(slot, position, station, style, alternate)?;
                         }
+                    }
+                    Packet::TileChange {
+                        action,
+                        position,
+                        value,
+                        ..
+                    } if construction::handles(action) => {
+                        self.construction_edit(slot, action, position, value)?;
                     }
                     Packet::TileChange {
                         action,
