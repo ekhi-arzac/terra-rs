@@ -1,11 +1,15 @@
 //! Shared hammer shapes and mechanical tile flags carried by terrain updates.
-use super::Roster;
-use crate::terrain::{LoadedWorld, is_solid_floor};
-use terraria_protocol::Error;
+use super::{BytesMut, Roster};
+use crate::terrain::{
+    LoadedWorld, is_solid_floor,
+    wiring::{ACTUATOR, SWITCH, WIRE_MASKS},
+};
+use std::collections::BTreeMap;
+use terraria_protocol::{Error, Packet};
 use terraria_world::Tile;
 
 pub(super) fn handles(action: u8) -> bool {
-    matches!(action, 5..=14 | 16 | 17 | 23)
+    matches!(action, 5..=14 | 16 | 17 | 19 | 23)
 }
 
 fn hammer(
@@ -60,12 +64,12 @@ fn hammer(
 }
 
 fn mechanical(mut tile: Tile, action: u8) -> (Tile, Option<i16>) {
-    let (byte, mask, place, item) = match action {
-        5 | 6 => (1, 2, action == 5, 530),
-        8 | 9 => (2, 2, action == 8, 849),
-        10 | 11 => (1, 4, action == 10, 530),
-        12 | 13 => (1, 8, action == 12, 530),
-        16 | 17 => (2, 32, action == 16, 530),
+    let ((byte, mask), place, item) = match action {
+        5 | 6 => (WIRE_MASKS[0], action == 5, 530),
+        8 | 9 => ((2, ACTUATOR), action == 8, 849),
+        10 | 11 => (WIRE_MASKS[1], action == 10, 530),
+        12 | 13 => (WIRE_MASKS[2], action == 12, 530),
+        16 | 17 => (WIRE_MASKS[3], action == 16, 530),
         _ => return (tile, None),
     };
     let was_set = tile.flags[byte] & mask != 0;
@@ -78,6 +82,37 @@ fn mechanical(mut tile: Tile, action: u8) -> (Tile, Option<i16>) {
 }
 
 impl Roster {
+    pub(super) fn hit_switch(&mut self, slot: u8, position: [i16; 2]) -> Result<(), Error> {
+        let Some(world) = self.world.clone() else {
+            return Ok(());
+        };
+        let Some(changes) = world.switch_changes(position) else {
+            if let Some(peer) = self.peers.get_mut(&slot)
+                && let Some(tile) = world.tile(position)
+                && tile.block == Some(SWITCH)
+            {
+                peer.queue(LoadedWorld::tile_patch(position, tile)?);
+            }
+            return Ok(());
+        };
+        // Group committed snapshots by subscription, but keep distant actuators in separate frames.
+        let mut batches = BTreeMap::<_, BytesMut>::new();
+        for &(pos, tile) in &changes {
+            batches
+                .entry(LoadedWorld::section_at(pos))
+                .or_default()
+                .extend_from_slice(&LoadedWorld::tile_patch(pos, tile)?);
+        }
+        let click = Packet::HitSwitch(position).encode()?;
+        world.commit_tiles(&changes, None);
+        // Clients can play the stock switch event, then apply the authoritative frame and state.
+        self.send_section_update(LoadedWorld::section_at(position), Some(slot), click);
+        for (section, batch) in batches {
+            self.send_section_update(section, None, batch.freeze());
+        }
+        Ok(())
+    }
+
     pub(super) fn construction_edit(
         &mut self,
         slot: u8,
@@ -91,13 +126,13 @@ impl Roster {
         let Some(before) = world.tile(position) else {
             return Ok(());
         };
-        let (updated, item) = if matches!(action, 7 | 14 | 23) {
-            (
+        let (updated, item) = match action {
+            7 | 14 | 23 => (
                 hammer(&world, position, before, action, value).unwrap_or(before),
                 None,
-            )
-        } else {
-            mechanical(before, action)
+            ),
+            19 => (world.actuator_change(position).unwrap_or(before), None),
+            _ => mechanical(before, action),
         };
         if updated != before {
             self.publish_tiles(&world, &[(position, updated)])?;

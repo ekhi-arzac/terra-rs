@@ -18,6 +18,10 @@ const HALF: [i16; 2] = [2199, 230];
 const SLOPE: [i16; 2] = [2200, 230];
 const WIRING: [i16; 2] = [2201, 230];
 const SUPPORT: [i16; 2] = [2210, 234];
+const SWITCH: [i16; 2] = [2198, 226];
+const ACTUATED: [i16; 2] = [2201, 226];
+const TWO_COLORS: [i16; 2] = [2202, 226];
+const DISCONNECTED: [i16; 2] = [2204, 226];
 
 fn fixture() -> Result<World> {
     let world = World::parse(include_bytes!("../../../docs/fixtures/entry-326.wld").to_vec())?;
@@ -32,6 +36,63 @@ fn fixture() -> Result<World> {
         ([HALF[0], HALF[1] - 1], Tile::default()),
         ([SLOPE[0], SLOPE[1] - 1], Tile::default()),
     ]);
+    for x in 2198..=2202 {
+        tiles.insert([x, 225], Tile::default());
+        tiles.insert(
+            [x, 226],
+            Tile {
+                flags: [0, 2, 0, 0],
+                ..Tile::default()
+            },
+        );
+        tiles.insert(
+            [x, 227],
+            Tile {
+                flags: [0, 4, 0, 0],
+                ..Tile::default()
+            },
+        );
+    }
+    for x in 2199..=2200 {
+        tiles.insert(
+            [x, 225],
+            Tile {
+                flags: [0, 2, 0, 0],
+                ..Tile::default()
+            },
+        );
+    }
+    tiles.insert(
+        SWITCH,
+        Tile {
+            block: Some(136),
+            frame: Some((0, 0)),
+            wall: 4,
+            flags: [0, 6, 0, 0],
+            ..Tile::default()
+        },
+    );
+    tiles.insert(
+        ACTUATED,
+        Tile {
+            flags: [0, 2, 2, 0],
+            ..stone
+        },
+    );
+    tiles.insert(
+        TWO_COLORS,
+        Tile {
+            flags: [0, 6, 2, 0],
+            ..stone
+        },
+    );
+    tiles.insert(
+        DISCONNECTED,
+        Tile {
+            flags: [0, 4, 2, 0],
+            ..stone
+        },
+    );
     let [x, y] = SUPPORT;
     for dx in 0..2 {
         for dy in 0..2 {
@@ -113,10 +174,35 @@ fn check_tile(position: [i16; 2], tile: Tile) -> Result<()> {
         SLOPE => tile.block == Some(1) && tile.flags[1] & 0x70 == 80,
         WIRING => tile.block.is_none() && tile.flags[1] & 14 == 12 && tile.flags[2] & 34 == 0,
         SUPPORT => tile.block == Some(1) && tile.flags[1] & 0x70 == 0,
+        SWITCH => tile.block == Some(136) && tile.frame == Some((0, 18)),
+        ACTUATED => tile.block == Some(1) && tile.flags[2] & 6 == 6,
+        TWO_COLORS | DISCONNECTED => tile.block == Some(1) && tile.flags[2] & 6 == 2,
         _ => return Err("construction test checked an unknown coordinate".into()),
     };
     if !expected {
         return Err(format!("unexpected terrain at {position:?}: {tile:?}").into());
+    }
+    Ok(())
+}
+
+async fn press(source: &mut TcpStream, observer: &mut TcpStream, inactive: bool) -> Result<()> {
+    let click = Packet::HitSwitch(SWITCH);
+    write_packet(source, &click).await?;
+    let mut clicked = false;
+    let mut actuated = false;
+    while !clicked || !actuated {
+        let frame = read_frame(observer)
+            .await?
+            .ok_or("EOF waiting for an actuator pulse")?;
+        match frame.id {
+            2 => return Err("player disconnected during switch pulse".into()),
+            59 => clicked |= Packet::decode(&frame)? == click,
+            20 => {
+                actuated |= visible_tile(&[Packet::decode(&frame)?], ACTUATED)
+                    .is_some_and(|tile| is_wire_bit(tile, 2, 4, inactive));
+            }
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -212,16 +298,34 @@ pub(super) async fn run(address: SocketAddr, password: Option<&str>) -> Result<(
             _ => {}
         }
     }
+    press(&mut editor, &mut observer, true).await?;
+    press(&mut observer, &mut editor, false).await?;
+    press(&mut editor, &mut observer, true).await?;
+    for inactive in [true, false] {
+        send_edit(&mut observer, &mut editor, 19, DISCONNECTED, 0, |tile| {
+            is_wire_bit(tile, 2, 4, inactive)
+        })
+        .await?;
+    }
     let mut capture = Vec::new();
     let (_late, _, _, _) = join_capturing(address, password, &mut capture).await?;
-    for position in [HALF, SLOPE, WIRING, SUPPORT] {
+    for position in [
+        HALF,
+        SLOPE,
+        WIRING,
+        SUPPORT,
+        SWITCH,
+        ACTUATED,
+        TWO_COLORS,
+        DISCONNECTED,
+    ] {
         check_tile(
             position,
             visible_tile(&capture, position).ok_or("late join missed the edited tile")?,
         )?;
     }
     println!(
-        "Verified slopes, a half-block, chest support, wiring, actuator recovery, and late-entry terrain."
+        "Verified hammer shapes, wire recovery, a cross-section actuator circuit, and late-entry terrain."
     );
     Ok(())
 }
@@ -258,7 +362,16 @@ mod tests {
         send.send(()).unwrap();
         server.await??;
         let saved = World::load(path)?;
-        for position @ [x, y] in [HALF, SLOPE, WIRING, SUPPORT] {
+        for position @ [x, y] in [
+            HALF,
+            SLOPE,
+            WIRING,
+            SUPPORT,
+            SWITCH,
+            ACTUATED,
+            TWO_COLORS,
+            DISCONNECTED,
+        ] {
             check_tile(position, saved.tile(x as u32, y as u32)?)?;
         }
         Ok(())

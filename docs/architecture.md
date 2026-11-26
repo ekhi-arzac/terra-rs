@@ -63,3 +63,5 @@ The roster tracks the last reported projectile key and position per client and l
 A world-clock tick updates the save revision. Tile and container mutations also record a content revision, allowing saves and joins to skip the terrain and container journals when only time has advanced. A clock-only checkpoint copies the original sections and validates the new world image before publishing.
 
 The roster owns sign opening and edits. The world journal tracks the sign slot and text revision. A section snapshots sign text under the same lock as its terrain, and initial catch-up sends edits made during the transfer. The disk worker includes sign records in the same validated checkpoint as the calendar, terrain and containers.
+
+The roster resolves each switch press from one view of the terrain. The traversal follows connected cells by color, deduplicates loops and computes the final block states before committing them together. The visit limit bounds the work for one press. The roster groups resulting patches by section for peers already in the world.

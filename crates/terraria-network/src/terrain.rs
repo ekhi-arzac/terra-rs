@@ -1,4 +1,5 @@
 mod signs;
+pub(super) mod wiring;
 
 use crate::{Error, write_packet};
 use bytes::{Bytes, BytesMut};

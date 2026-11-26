@@ -139,6 +139,7 @@ pub enum Packet {
     },
     RequestChest([i16; 2]),
     RequestSign([i16; 2]),
+    HitSwitch([i16; 2]),
     LiquidUpdate(crate::LiquidUpdate),
     LiquidBatch(Vec<crate::LiquidUpdate>),
     SignText {
@@ -259,6 +260,7 @@ impl Packet {
             Self::NpcHome { .. } => 60,
             Self::RequestChest(_) => 31,
             Self::RequestSign(_) => 46,
+            Self::HitSwitch(_) => 59,
             Self::LiquidUpdate(_) => 48,
             Self::LiquidBatch(_) => 82,
             Self::SignText { .. } => 47,
@@ -402,6 +404,7 @@ impl Packet {
             151 => Self::RemoveItem(r.i16()?),
             31 => Self::RequestChest(r.i16s()?),
             46 => Self::RequestSign(r.i16s()?),
+            59 => Self::HitSwitch(r.i16s()?),
             48 => Self::LiquidUpdate(crate::LiquidUpdate::read(&mut r)?),
             47 => Self::SignText {
                 index: r.i16()?,
@@ -762,7 +765,9 @@ impl Packet {
                 out.put_u8((*force).into());
             }
             Self::RemoveItem(slot) => out.put_i16_le(*slot),
-            Self::RequestChest(position) | Self::RequestSign(position) => {
+            Self::RequestChest(position)
+            | Self::RequestSign(position)
+            | Self::HitSwitch(position) => {
                 for v in position {
                     out.put_i16_le(*v);
                 }

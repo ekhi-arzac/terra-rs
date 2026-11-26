@@ -57,6 +57,7 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
         ),
         (Packet::Appearance(a), 4, appearance),
         (Packet::RequestSign([2199, 232]), 46, vec![151, 8, 232, 0]),
+        (Packet::HitSwitch([2199, 232]), 59, vec![151, 8, 232, 0]),
         (
             Packet::LiquidUpdate(terraria_protocol::LiquidUpdate {
                 position: [2198, 232],

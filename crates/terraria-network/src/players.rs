@@ -636,6 +636,7 @@ impl Roster {
                 | Packet::ChestUpdate { position, .. }
                 | Packet::RequestChestName { position, .. }
                 | Packet::RequestSign(position)
+                | Packet::HitSwitch(position)
                 | Packet::SignText { position, .. }
                 | Packet::LiquidUpdate(terraria_protocol::LiquidUpdate { position, .. })
                 | Packet::RequestChest(position) = &packet
@@ -644,6 +645,7 @@ impl Roster {
                     return Ok(());
                 }
                 match packet {
+                    Packet::HitSwitch(position) => self.hit_switch(slot, position)?,
                     Packet::LiquidUpdate(change) => {
                         if let Some(reply) =
                             self.world.as_ref().and_then(|w| w.update_liquid(change))
@@ -1277,6 +1279,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 50
             | 51
             | 56
+            | 59
             | 69
             | 79
             | 82
@@ -1312,6 +1315,7 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
         | Packet::RequestNpcName(_)
         | Packet::RequestChest(_)
         | Packet::RequestSign(_)
+        | Packet::HitSwitch(_)
         | Packet::SignText { .. }
         | Packet::LiquidUpdate(_)
         | Packet::ChestState { .. } => {}
