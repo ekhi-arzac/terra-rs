@@ -126,3 +126,9 @@ Packet 118 begins with a player byte and a death-reason mask. In increasing bit 
 Late entry includes packet 135 (one player byte) before the life packet for a player with zero health. A subsequent player spawn uses packet 12 with the normal spawn layout and reaches other active clients. The client continues to report its vitals in packet 16.
 
 Packet 117 uses the same player byte, reason mask and fields, damage and direction encoding as packet 118. Its flag byte uses bits 0–2 for critical, PvP and dodgeable. A signed immunity slot follows, with values −1 through 5 in this version. A client may report a hit to itself or to another active player when both have enabled PvP. Rust uses the sender’s slot for cross-player attribution and relays the report to the other sockets. Packet 16 supplies the injured client’s latest health.
+
+## Projectile synchronization
+
+Packets 27 and 29 start with a little-endian u32 key. Bits 0–7 are the spawning player, bits 8–17 are the local slot, and bits 18–31 are the generation. Rust relays only keys belonging to the sending socket. Packet 29 appends two f32 coordinates.
+
+Packet 27 appends two f32 position components, two f32 velocity components, an i16 type and a flag byte. Bit 2 selects an extra flag byte. The optional fields are two f32 AI values (bits 0–1), u16 banner (bit 3), i16 damage (bit 4), f32 knockback (bit 5), i16 original damage (bit 6), and a third f32 AI value (extra byte bit 0). Rust relays type 1 and 14 updates and maintains enough state to clear these projectiles when their owner leaves. Projectiles remain session-local.

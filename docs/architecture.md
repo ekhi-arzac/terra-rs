@@ -57,3 +57,5 @@ Supported town residents keep their saved NPC slot, position, name, variation an
 Team membership and PvP status belong to the active connection. The roster initializes team from the stock spawn message, includes both values in join snapshots and decides party-chat recipients when it processes the command.
 
 A death report updates the roster's life and PvP death state and releases the player's open chest. A later spawn replaces the prior position, team and spawn record. Health uploads, item reservation selection, door obstruction checks and joining snapshots read the same player state.
+
+The roster tracks the last reported projectile key and position per client and local slot for the supported projectile messages. It verifies the key against the connection and clears the remaining entries on departure. A delayed removal with an older generation leaves the tracked newer instance intact.

@@ -57,6 +57,40 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
         ),
         (Packet::Appearance(a), 4, appearance),
         (
+            Packet::ProjectileSync(terraria_protocol::ProjectileSync {
+                key: terraria_protocol::ProjectileKey {
+                    spawner: 0,
+                    index: 0,
+                    generation: 2,
+                },
+                position: [33750., 2500.],
+                velocity: [8., 0.],
+                kind: 1,
+                ai: [Some(1.25), Some(2.25), Some(0.5)],
+                banner: Some(1),
+                damage: Some(7),
+                knockback: Some(1.5),
+                original_damage: Some(8),
+            }),
+            27,
+            vec![
+                0, 0, 8, 0, 0, 214, 3, 71, 0, 64, 28, 69, 0, 0, 0, 65, 0, 0, 0, 0, 1, 0, 127, 1, 0,
+                0, 160, 63, 0, 0, 16, 64, 1, 0, 7, 0, 0, 0, 192, 63, 8, 0, 0, 0, 0, 63,
+            ],
+        ),
+        (
+            Packet::ProjectileRemove(terraria_protocol::ProjectileRemove {
+                key: terraria_protocol::ProjectileKey {
+                    spawner: 0,
+                    index: 0,
+                    generation: 2,
+                },
+                position: [33760., 2505.],
+            }),
+            29,
+            vec![0, 0, 8, 0, 0, 224, 3, 71, 0, 144, 28, 69],
+        ),
+        (
             Packet::PlayerHurt(terraria_protocol::PlayerHurt {
                 player: 0,
                 reason: terraria_protocol::DeathReason {
@@ -211,6 +245,8 @@ fn layouts_round_trip_and_reject_truncation_and_trailing_bytes() {
         Err(Error::Unknown(51))
     );
     assert!(Packet::decode_client(&frame(45, &[3, 6])).is_err());
+    assert!(Packet::decode_client(&frame(29, &[0, 0, 8, 0, 0, 0, 192, 127, 0, 0, 0, 0])).is_err());
+    assert!(Packet::decode_client(&frame(29, &[0, 255, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0])).is_err());
     for (packet, id, payload) in examples() {
         let mut bytes = BytesMut::from(packet.encode().unwrap().as_ref());
         assert_eq!(bytes[..2], ((payload.len() + 3) as u16).to_le_bytes());

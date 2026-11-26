@@ -163,6 +163,8 @@ pub enum Packet {
         chest: i16,
     },
     Spawn(Spawn),
+    ProjectileSync(crate::ProjectileSync),
+    ProjectileRemove(crate::ProjectileRemove),
     PlayerHurt(crate::PlayerHurt),
     PlayerDeath(crate::PlayerDeath),
     SetDeadAppearance(u8),
@@ -253,6 +255,8 @@ impl Packet {
             Self::ChestSize { .. } => 155,
             Self::ChestItem { .. } => 32,
             Self::Spawn(_) => 12,
+            Self::ProjectileSync(_) => 27,
+            Self::ProjectileRemove(_) => 29,
             Self::PlayerHurt(_) => 117,
             Self::PlayerDeath(_) => 118,
             Self::SetDeadAppearance(_) => 135,
@@ -477,6 +481,8 @@ impl Packet {
                 prefix: r.byte()?,
                 item: r.i16()?,
             },
+            27 => Self::ProjectileSync(crate::ProjectileSync::read(&mut r)?),
+            29 => Self::ProjectileRemove(crate::ProjectileRemove::read(&mut r)?),
             117 => Self::PlayerHurt(crate::PlayerHurt::read(&mut r)?),
             118 => Self::PlayerDeath(crate::PlayerDeath::read(&mut r)?),
             135 => Self::SetDeadAppearance(r.byte()?),
@@ -846,6 +852,8 @@ impl Packet {
                     out.put_u16_le(*n)
                 }
             }
+            Self::ProjectileSync(p) => p.write(&mut out)?,
+            Self::ProjectileRemove(p) => p.write(&mut out)?,
             Self::PlayerHurt(p) => p.write(&mut out)?,
             Self::PlayerDeath(p) => p.write(&mut out)?,
             Self::SetDeadAppearance(player) => out.put_u8(*player),

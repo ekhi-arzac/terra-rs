@@ -13,7 +13,9 @@ use std::{
     io,
     time::Duration,
 };
-use terraria_protocol::{Equipment, Error as ProtocolError, Movement, NetworkText, Packet};
+use terraria_protocol::{
+    Equipment, Error as ProtocolError, Movement, NetworkText, Packet, ProjectileRemove,
+};
 use tokio::{io::AsyncWriteExt, net::TcpStream, sync::mpsc, time::timeout};
 
 pub(super) enum Outbound {
@@ -42,6 +44,7 @@ struct Player {
     sections: BTreeSet<[u16; 2]>,
     chest: Option<i16>,
     movement: Option<Movement>,
+    projectiles: BTreeMap<u16, ProjectileRemove>,
     dead: bool,
     pvp_death: bool,
     hostile: bool,
@@ -553,6 +556,7 @@ impl Roster {
                     sections: sent,
                     chest: None,
                     movement: None,
+                    projectiles: BTreeMap::new(),
                     zones: None,
                     out: Some(out),
                 };
@@ -604,6 +608,13 @@ impl Roster {
                         );
                     }
                     self.refresh_owners()?;
+                    let mut removals = BytesMut::new();
+                    for projectile in player.projectiles.into_values() {
+                        removals.extend_from_slice(&Packet::ProjectileRemove(projectile).encode()?);
+                    }
+                    if !removals.is_empty() {
+                        self.send(None, removals.freeze());
+                    }
                     self.send(
                         None,
                         Packet::PlayerActive {
@@ -629,6 +640,32 @@ impl Roster {
                     return Ok(());
                 }
                 match packet {
+                    Packet::ProjectileSync(projectile)
+                        if projectile.key.spawner == slot && matches!(projectile.kind, 1 | 14) =>
+                    {
+                        let bytes = Packet::ProjectileSync(projectile).encode()?;
+                        let entry = ProjectileRemove {
+                            key: projectile.key,
+                            position: projectile.position,
+                        };
+                        if let Some(old) = peer.projectiles.insert(projectile.key.index, entry)
+                            && old.key != projectile.key
+                        {
+                            self.send(Some(slot), Packet::ProjectileRemove(old).encode()?);
+                        }
+                        self.send(Some(slot), bytes);
+                    }
+                    Packet::ProjectileRemove(projectile) if projectile.key.spawner == slot => {
+                        if peer
+                            .projectiles
+                            .get(&projectile.key.index)
+                            .is_some_and(|active| active.key == projectile.key)
+                        {
+                            peer.projectiles.remove(&projectile.key.index);
+                        }
+                        self.send(Some(slot), Packet::ProjectileRemove(projectile).encode()?);
+                    }
+                    Packet::ProjectileSync(_) | Packet::ProjectileRemove(_) => {}
                     Packet::PlayerHurt(mut hurt) => {
                         let hostile = peer.hostile;
                         if let Some(target) = self.peers.get(&hurt.player)
@@ -1167,6 +1204,8 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 17
             | 19
             | 21
+            | 27
+            | 29
             | 30
             | 31
             | 32
@@ -1200,6 +1239,8 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
         Packet::TileChange { .. }
         | Packet::ObjectPlacement { .. }
         | Packet::DoorToggle { .. }
+        | Packet::ProjectileSync(_)
+        | Packet::ProjectileRemove(_)
         | Packet::RequestSection(_) => {}
         Packet::DroppedItem(i)
             if (0..=terraria_protocol::NEW_ITEM).contains(&i.slot)

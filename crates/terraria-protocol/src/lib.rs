@@ -10,6 +10,8 @@ pub use movement::Movement;
 mod npc;
 pub use npc::{NpcLife, NpcSync};
 mod packet;
+mod projectile;
+pub use projectile::{ProjectileKey, ProjectileRemove, ProjectileSync};
 mod server_info;
 mod text;
 mod tile_patch;

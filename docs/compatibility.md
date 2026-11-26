@@ -174,3 +174,7 @@ The same three-player `terraria-testkit respawn ADDR` scenario passed on Rust an
 ## Player hurt reports
 
 The three-player `terraria-testkit hurt ADDR` probe passed against the installed official 1.4.6.1 server and Rust. It verifies delivery of an environmental hit, suppression of a hit before PvP opt-in, delivery to the target and another observer after both players opt in, and health synchronization to a late joiner after the target uploads its vitals. Rust binds attribution for cross-player reports to the sending connection. Rust uses the victim’s subsequent health upload for its roster. An official-server probe also observed a changed health value before that upload, which remains a difference.
+
+## Client projectile messages
+
+The two-player `terraria-testkit projectiles ADDR` probe passed against the installed official 1.4.6.1 server and Rust for wooden arrows and bullets. For each type it compared a first synchronization message, a position update, removal by the owner and rejection of removal by another player. The Rust regression also checks generation wrap and cleanup on disconnect. Coverage is limited to relaying these client-managed projectile messages. Physics, collision, damage, other projectile types and late-entry projectile snapshots remain incomplete.
