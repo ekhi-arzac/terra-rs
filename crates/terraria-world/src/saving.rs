@@ -1,4 +1,4 @@
-use super::{Chest, Error, SECTION_COUNT, Tile, World};
+use super::{Chest, Error, SECTION_COUNT, Sign, Tile, World};
 use bytes::{BufMut, BytesMut};
 use std::{
     collections::BTreeMap,
@@ -31,7 +31,14 @@ impl World {
         slots: &BTreeMap<(i16, u8), ChestStack>,
         names: &BTreeMap<i16, String>,
     ) -> Result<World, Error> {
-        self.with_changes(blocks, slots, names, &BTreeMap::new(), None)
+        self.with_changes(
+            blocks,
+            slots,
+            names,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+        )
     }
 
     /// Container positions survive file compaction; network slot numbers are session-local.
@@ -40,7 +47,14 @@ impl World {
         blocks: &BTreeMap<[i16; 2], Tile>,
         containers: &BTreeMap<(i32, i32), Option<Chest>>,
     ) -> Result<World, Error> {
-        self.with_changes(blocks, &BTreeMap::new(), &BTreeMap::new(), containers, None)
+        self.with_changes(
+            blocks,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            containers,
+            &BTreeMap::new(),
+            None,
+        )
     }
 
     pub fn checkpoint(
@@ -49,11 +63,22 @@ impl World {
         containers: &BTreeMap<(i32, i32), Option<Chest>>,
         clock: crate::WorldClock,
     ) -> Result<World, Error> {
+        self.checkpoint_with_signs(blocks, containers, &BTreeMap::new(), clock)
+    }
+
+    pub fn checkpoint_with_signs(
+        &self,
+        blocks: &BTreeMap<[i16; 2], Tile>,
+        containers: &BTreeMap<(i32, i32), Option<Chest>>,
+        signs: &BTreeMap<i16, Sign>,
+        clock: crate::WorldClock,
+    ) -> Result<World, Error> {
         self.with_changes(
             blocks,
             &BTreeMap::new(),
             &BTreeMap::new(),
             containers,
+            signs,
             Some(clock),
         )
     }
@@ -64,6 +89,7 @@ impl World {
         slots: &BTreeMap<(i16, u8), ChestStack>,
         names: &BTreeMap<i16, String>,
         containers: &BTreeMap<(i32, i32), Option<Chest>>,
+        signs: &BTreeMap<i16, Sign>,
         clock: Option<crate::WorldClock>,
     ) -> Result<World, Error> {
         if names.iter().any(|(&index, name)| {
@@ -80,8 +106,12 @@ impl World {
             self.join_state()?.clock_offsets.write(&mut out, clock);
         }
         if blocks.is_empty() && slots.is_empty() && names.is_empty() && containers.is_empty() {
-            out.extend_from_slice(&self.data[self.offsets[1]..]);
-            return self.validate_revision(out);
+            if signs.is_empty() {
+                out.extend_from_slice(&self.data[self.offsets[1]..]);
+                return self.validate_revision(out);
+            }
+            out.extend_from_slice(&self.data[self.offsets[1]..self.offsets[3]]);
+            return self.finish_sections(out, self.offsets, signs);
         }
         let mut offsets = self.offsets;
         for (x, column) in self.columns.windows(2).enumerate() {
@@ -206,11 +236,26 @@ impl World {
         if written != slots.len() {
             return Err(Error::Invalid("save chest slot"));
         }
-        let tail_start = out.len();
-        for (i, offset) in offsets.iter_mut().enumerate().take(SECTION_COUNT).skip(3) {
-            *offset = tail_start + (self.offsets[i] - self.offsets[3]);
+        self.finish_sections(out, offsets, signs)
+    }
+
+    fn finish_sections(
+        &self,
+        mut out: BytesMut,
+        mut offsets: [usize; SECTION_COUNT + 1],
+        signs: &BTreeMap<i16, Sign>,
+    ) -> Result<World, Error> {
+        offsets[3] = out.len();
+        if signs.is_empty() {
+            out.extend_from_slice(&self.data[self.offsets[3]..self.offsets[4]]);
+        } else {
+            self.write_signs(&mut out, signs)?;
         }
-        out.extend_from_slice(&self.data[self.offsets[3]..]);
+        let tail_start = out.len();
+        for (i, offset) in offsets.iter_mut().enumerate().take(SECTION_COUNT).skip(4) {
+            *offset = tail_start + (self.offsets[i] - self.offsets[4]);
+        }
+        out.extend_from_slice(&self.data[self.offsets[4]..]);
         for (field, &offset) in out[26..26 + 4 * SECTION_COUNT]
             .as_chunks_mut::<4>()
             .0
@@ -224,6 +269,38 @@ impl World {
             );
         }
         self.validate_revision(out)
+    }
+
+    fn write_signs(&self, out: &mut BytesMut, edits: &BTreeMap<i16, Sign>) -> Result<(), Error> {
+        let mut added = self.signs.len();
+        for (&index, sign) in edits {
+            let index = usize::try_from(index).map_err(|_| Error::Invalid("sign index"))?;
+            if index == added {
+                added += 1;
+            } else if index >= self.signs.len() || self.signs[index].position != sign.position {
+                return Err(Error::Invalid("sign edit index or position"));
+            }
+            let (x, y) = sign.position;
+            if x < 0 || y < 0 || x as u32 >= self.meta.width || y as u32 >= self.meta.height {
+                return Err(Error::Invalid("sign position"));
+            }
+        }
+        if added > 32000 {
+            return Err(Error::Invalid("sign count"));
+        }
+        out.put_i16_le(added as i16);
+        let existing = self
+            .signs
+            .iter()
+            .enumerate()
+            .map(|(index, original)| edits.get(&(index as i16)).unwrap_or(original));
+        let appended = edits.range(self.signs.len() as i16..).map(|(_, sign)| sign);
+        for sign in existing.chain(appended) {
+            terraria_binary::put_string(out, &sign.text);
+            out.put_i32_le(sign.position.0);
+            out.put_i32_le(sign.position.1);
+        }
+        Ok(())
     }
 
     fn validate_revision(&self, mut out: BytesMut) -> Result<World, Error> {

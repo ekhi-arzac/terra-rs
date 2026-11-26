@@ -1,3 +1,5 @@
+mod signs;
+
 use crate::{Error, write_packet};
 use bytes::{Bytes, BytesMut};
 use std::{
@@ -32,6 +34,7 @@ pub(super) struct SectionSnapshot {
     tiles: Vec<([i16; 2], Tile)>,
     chests: Bytes,
     chest_objects: Vec<terraria_protocol::section::SectionObject>,
+    sign_objects: Vec<terraria_protocol::section::SectionObject>,
 }
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct TileBounds {
@@ -67,6 +70,7 @@ struct WorldEdits {
     tiles: BTreeMap<[u16; 2], BTreeMap<[i16; 2], TileEdit>>,
     revision: u64,
     containers: crate::containers::Containers,
+    signs: signs::Signs,
 }
 
 /// Owned by the single disk writer. Readers continue using the original world and live edits.
@@ -87,7 +91,7 @@ impl LoadedWorld {
         if revision == checkpoint.revision {
             return Ok(false);
         }
-        let (blocks, containers) = if edits.content_revision > checkpoint.revision {
+        let (blocks, containers, signs) = if edits.content_revision > checkpoint.revision {
             let blocks = edits
                 .tiles
                 .values()
@@ -95,18 +99,22 @@ impl LoadedWorld {
                 .filter(|(_, edit)| edit.revision > checkpoint.revision)
                 .map(|(&pos, edit)| (pos, edit.tile))
                 .collect();
-            (blocks, edits.containers.changes(checkpoint.revision))
+            (
+                blocks,
+                edits.containers.changes(checkpoint.revision),
+                edits.signs.changes(checkpoint.revision),
+            )
         } else {
             Default::default()
         };
         let clock = edits.clock;
         drop(edits);
         let base = checkpoint.published.as_ref().unwrap_or(&self.source);
-        let updated = base.checkpoint(&blocks, &containers, clock)?;
+        let updated = base.checkpoint_with_signs(&blocks, &containers, &signs, clock)?;
         base.publish_edits(&updated, path)?;
         checkpoint.published = Some(updated);
         checkpoint.revision = revision;
-        tracing::info!(world=%path.display(), tiles=blocks.len(),chests=containers.len(),"saved world changes");
+        tracing::info!(world=%path.display(), tiles=blocks.len(), chests=containers.len(), signs=signs.len(), "saved world changes");
         Ok(true)
     }
 
@@ -140,6 +148,7 @@ impl LoadedWorld {
                 .min(4),
         ));
         let containers = crate::containers::Containers::load(&source);
+        let signs = signs::Signs::load(&source);
         Ok(Self {
             data,
             time_rate,
@@ -147,6 +156,7 @@ impl LoadedWorld {
             join_state: join_state.freeze(),
             edits: RwLock::new(WorldEdits {
                 containers,
+                signs,
                 clock,
                 ..Default::default()
             }),
@@ -414,6 +424,7 @@ impl LoadedWorld {
         for bounds in footprints {
             out.extend_from_slice(&self.encode_rectangle(bounds, &edits, &BTreeMap::new())?);
         }
+        edits.signs.catch_up(since, sent, out)?;
         edits.containers.catch_up(since, sent, out)
     }
     pub fn edit_chest(&self, id: i16, slot: u8, value: ChestStack) -> bool {
@@ -455,6 +466,7 @@ impl LoadedWorld {
             tiles,
             chests: chests.freeze(),
             chest_objects,
+            sign_objects: edits.signs.snapshot(index),
         })
     }
 
@@ -473,11 +485,13 @@ impl LoadedWorld {
             tiles,
             chests,
             chest_objects,
+            sign_objects,
         } = snapshot;
         let frame = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let mut section = source.source.section_with_edits(index, &tiles)?;
             section.chests = chest_objects;
+            section.signs = sign_objects;
             Ok::<_, Error>(Packet::TileSection(Box::new(section)).encode()?)
         })
         .await??;

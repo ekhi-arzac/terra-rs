@@ -178,3 +178,9 @@ The three-player `terraria-testkit hurt ADDR` probe passed against the installed
 ## Client projectile messages
 
 The two-player `terraria-testkit projectiles ADDR` probe passed against the installed official 1.4.6.1 server and Rust for wooden arrows and bullets. For each type it compared a first synchronization message, a position update, removal by the owner and rejection of removal by another player. The Rust regression also checks generation wrap and cleanup on disconnect. Coverage is limited to relaying these client-managed projectile messages. Physics, collision, damage, other projectile types and late-entry projectile snapshots remain incomplete.
+
+## Sign editing and persistence
+
+The `terraria-testkit signs ADDR` probe passed on the installed 1.4.6.1 server and Rust. It reads a sign spanning a section boundary from its bottom-right tile, changes its text, opens a second sign whose text record is missing, and checks both texts on a late join. The probe uses multiline Unicode. The official server also opened a copy of the Rust checkpoint and returned both saved texts from their original tile anchors.
+
+Create separate disposable fixtures with `terraria-testkit sign-fixture NEW_DIR`, then start each server on its own `signs.wld`. Rust limits each new text edit to 4,096 UTF-8 bytes. Sign placement and destruction remain incomplete.

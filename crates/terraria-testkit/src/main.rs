@@ -6,6 +6,7 @@ mod peers;
 mod projectiles;
 mod resources;
 mod respawn;
+mod signs;
 mod teams;
 use std::{env, error::Error, fs, io, net::SocketAddr, path::Path, time::Duration};
 use terraria_network::{read_frame, write_packet};
@@ -344,6 +345,10 @@ async fn main() -> Result<()> {
         let password = env::var("TERRARIA_PROBE_PASSWORD").ok();
         let deadline = Duration::from_secs(30);
         match cmd.as_str() {
+            "sign-fixture" => return signs::prepare(Path::new(addr)),
+            "signs" => {
+                return timeout(deadline, signs::run(addr.parse()?, password.as_deref())).await?;
+            }
             "teams" => {
                 return timeout(deadline, teams::run(addr.parse()?, password.as_deref())).await?;
             }
@@ -398,7 +403,7 @@ async fn main() -> Result<()> {
         [cmd,addr,case] if cmd == "probe" => (addr,None,Scenario::parse(case)?,None),
         [cmd,a,b,case] if cmd == "compare" => (a,Some(b),Scenario::parse(case)?,None),
         [cmd,addr,path] if cmd == "capture-world" => (addr,None,Scenario::Join,Some(Path::new(path))),
-        _ => return Err("usage: terraria-testkit clock ADDR | teams ADDR | respawn ADDR | hurt ADDR | projectiles ADDR | resources ADDR CHEST_X CHEST_Y | peers ADDR [ADDR] | probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
+        _ => return Err("usage: terraria-testkit sign-fixture NEW_DIR | signs ADDR | clock ADDR | teams ADDR | respawn ADDR | hurt ADDR | projectiles ADDR | resources ADDR CHEST_X CHEST_Y | peers ADDR [ADDR] | probe ADDR CASE | compare REFERENCE CANDIDATE CASE | capture-world ADDR OUTPUT".into()),
     };
     let password = env::var("TERRARIA_PROBE_PASSWORD").ok();
     let run = |address: SocketAddr| {

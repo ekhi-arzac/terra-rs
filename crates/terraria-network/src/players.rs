@@ -634,12 +634,46 @@ impl Roster {
                 | Packet::DoorToggle { position, .. }
                 | Packet::ChestUpdate { position, .. }
                 | Packet::RequestChestName { position, .. }
+                | Packet::RequestSign(position)
+                | Packet::SignText { position, .. }
                 | Packet::RequestChest(position) = &packet
                     && !peer.sections.contains(&LoadedWorld::section_at(*position))
                 {
                     return Ok(());
                 }
                 match packet {
+                    Packet::RequestSign(position) => {
+                        if let Some(reply) = self
+                            .world
+                            .as_ref()
+                            .and_then(|w| w.open_sign(position, slot))
+                        {
+                            peer.queue(reply.encode()?);
+                        }
+                    }
+                    Packet::SignText {
+                        index,
+                        position,
+                        text,
+                        ..
+                    } => {
+                        if let Some((reply, changed)) = self
+                            .world
+                            .as_ref()
+                            .and_then(|w| w.edit_sign(position, index, text, slot))
+                        {
+                            let bytes = reply.encode()?;
+                            if changed {
+                                self.send_section_update(
+                                    LoadedWorld::section_at(position),
+                                    Some(slot),
+                                    bytes,
+                                );
+                            } else {
+                                peer.queue(bytes);
+                            }
+                        }
+                    }
                     Packet::ProjectileSync(projectile)
                         if projectile.key.spawner == slot && matches!(projectile.kind, 1 | 14) =>
                     {
@@ -1215,6 +1249,8 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
             | 39
             | 42
             | 45
+            | 46
+            | 47
             | 50
             | 51
             | 56
@@ -1252,6 +1288,8 @@ fn update(frame: &terraria_protocol::Frame, slot: u8) -> Result<Packet, Protocol
         | Packet::RequestChestName { .. }
         | Packet::RequestNpcName(_)
         | Packet::RequestChest(_)
+        | Packet::RequestSign(_)
+        | Packet::SignText { .. }
         | Packet::ChestState { .. } => {}
         Packet::ChestItem {
             stack,

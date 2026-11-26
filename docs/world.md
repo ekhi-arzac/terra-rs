@@ -57,3 +57,5 @@ The Rust loader sets local ceilings of 512 MiB/file, 32767 tiles per axis and 64
 
 
 The clock checkpoint preserves fractional phase time as an f64, the day flag, moon phase, blood moon and eclipse state, both dial cooldowns and both fast-forward flags. Packet 7 truncates the fractional time to an integer. Supported files also carry the saved creative time-freeze toggle and time-speed slider in section 9. The reader applies these values to the simulation and preserves the section bytes when saving.
+
+Sign text changes keep their saved record slots. Opening a valid sign tile without a text record appends an empty record. A checkpoint writes changes to the sign section and adjusts following section offsets while retaining the following data bytes.

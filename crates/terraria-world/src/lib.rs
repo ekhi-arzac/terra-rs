@@ -74,7 +74,7 @@ pub struct Chest {
     pub capacity: u32,
     pub items: Vec<StoredItem>,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sign {
     pub position: (i32, i32),
     pub text: String,

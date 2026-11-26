@@ -138,6 +138,14 @@ pub enum Packet {
         state: u8,
     },
     RequestChest([i16; 2]),
+    RequestSign([i16; 2]),
+    SignText {
+        index: i16,
+        position: [i16; 2],
+        text: String,
+        player: u8,
+        flags: u8,
+    },
     ChestUpdate {
         action: u8,
         position: [i16; 2],
@@ -248,6 +256,8 @@ impl Packet {
             Self::UseTimeDial { .. } => 51,
             Self::NpcHome { .. } => 60,
             Self::RequestChest(_) => 31,
+            Self::RequestSign(_) => 46,
+            Self::SignText { .. } => 47,
             Self::ChestUpdate { .. } => 34,
             Self::RequestChestName { .. } | Self::ChestName { .. } => 69,
             Self::ChestState { .. } => 33,
@@ -387,6 +397,14 @@ impl Packet {
             },
             151 => Self::RemoveItem(r.i16()?),
             31 => Self::RequestChest(r.i16s()?),
+            46 => Self::RequestSign(r.i16s()?),
+            47 => Self::SignText {
+                index: r.i16()?,
+                position: r.i16s()?,
+                text: r.string()?.to_owned(),
+                player: r.byte()?,
+                flags: r.byte()?,
+            },
             33 => {
                 let chest = r.i16()?;
                 let position = r.i16s()?;
@@ -738,10 +756,25 @@ impl Packet {
                 out.put_u8((*force).into());
             }
             Self::RemoveItem(slot) => out.put_i16_le(*slot),
-            Self::RequestChest(position) => {
+            Self::RequestChest(position) | Self::RequestSign(position) => {
                 for v in position {
                     out.put_i16_le(*v);
                 }
+            }
+            Self::SignText {
+                index,
+                position,
+                text,
+                player,
+                flags,
+            } => {
+                out.put_i16_le(*index);
+                for v in position {
+                    out.put_i16_le(*v);
+                }
+                put_string(&mut out, text)?;
+                out.put_u8(*player);
+                out.put_u8(*flags);
             }
             Self::ChestState {
                 chest,

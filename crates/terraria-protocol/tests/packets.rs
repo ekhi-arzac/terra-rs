@@ -56,6 +56,18 @@ fn examples() -> Vec<(Packet, u8, Vec<u8>)> {
             vec![0, 0],
         ),
         (Packet::Appearance(a), 4, appearance),
+        (Packet::RequestSign([2199, 232]), 46, vec![151, 8, 232, 0]),
+        (
+            Packet::SignText {
+                index: 2,
+                position: [2199, 232],
+                text: "←\n".into(),
+                player: 4,
+                flags: 0,
+            },
+            47,
+            vec![2, 0, 151, 8, 232, 0, 4, 226, 134, 144, 10, 4, 0],
+        ),
         (
             Packet::ProjectileSync(terraria_protocol::ProjectileSync {
                 key: terraria_protocol::ProjectileKey {

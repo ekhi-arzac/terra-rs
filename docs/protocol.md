@@ -132,3 +132,7 @@ Packet 117 uses the same player byte, reason mask and fields, damage and directi
 Packets 27 and 29 start with a little-endian u32 key. Bits 0–7 are the spawning player, bits 8–17 are the local slot, and bits 18–31 are the generation. Rust relays only keys belonging to the sending socket. Packet 29 appends two f32 coordinates.
 
 Packet 27 appends two f32 position components, two f32 velocity components, an i16 type and a flag byte. Bit 2 selects an extra flag byte. The optional fields are two f32 AI values (bits 0–1), u16 banner (bit 3), i16 damage (bit 4), f32 knockback (bit 5), i16 original damage (bit 6), and a third f32 AI value (extra byte bit 0). Rust relays type 1 and 14 updates and maintains enough state to clear these projectiles when their owner leaves. Projectiles remain session-local.
+
+## Sign text
+
+Packet 46 requests a sign with two i16 tile coordinates. A click on any tile in the sign footprint resolves to the top-left tile using its stored frame. Packet 47 carries the i16 sign slot, two i16 top-left coordinates, a .NET UTF-8 string, a player byte and a flag byte. With the requesting player in the packet and flag bit 0 clear the client opens the sign. Rust verifies the slot and coordinates against the current sign before accepting a text edit and uses the editing connection as the player. Subscribed peers receive text changes. Join catch-up and corrections set bit 0 to retain the current UI state.

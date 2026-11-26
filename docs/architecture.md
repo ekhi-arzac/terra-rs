@@ -61,3 +61,5 @@ A death report updates the roster's life and PvP death state and releases the pl
 The roster tracks the last reported projectile key and position per client and local slot for the supported projectile messages. It verifies the key against the connection and clears the remaining entries on departure. A delayed removal with an older generation leaves the tracked newer instance intact.
 
 A world-clock tick updates the save revision. Tile and container mutations also record a content revision, allowing saves and joins to skip the terrain and container journals when only time has advanced. A clock-only checkpoint copies the original sections and validates the new world image before publishing.
+
+The roster owns sign opening and edits. The world journal tracks the sign slot and text revision. A section snapshots sign text under the same lock as its terrain, and initial catch-up sends edits made during the transfer. The disk worker includes sign records in the same validated checkpoint as the calendar, terrain and containers.
